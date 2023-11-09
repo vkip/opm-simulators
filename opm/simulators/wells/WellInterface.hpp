@@ -349,7 +349,7 @@ public:
         return 0;
     }
 
-    double wellIndex(const int perf, const IntensiveQuantities& intQuants, const double trans_mult, const SingleWellState& ws) const;
+    double wellIndex(const int perf, const IntensiveQuantities& intQuants, const double trans_mult, const SingleWellState& ws, const bool is_gas = false) const;
 
     void updateConnectionDFactor(const Simulator& simulator, SingleWellState& ws) const;
 

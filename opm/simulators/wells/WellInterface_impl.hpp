@@ -1326,10 +1326,10 @@ namespace Opm
     template <typename TypeTag>
     double
     WellInterface<TypeTag>::
-    wellIndex(const int perf, const IntensiveQuantities& intQuants, const double trans_mult, const SingleWellState& ws) const {
+    wellIndex(const int perf, const IntensiveQuantities& intQuants, const double trans_mult, const SingleWellState& ws, const bool is_gas) const {
 
         const auto& wdfac = this->well_ecl_.getWDFAC();
-        if (!wdfac.useDFactor()) {
+        if (!wdfac.useDFactor() || !is_gas) {
             return this->well_index_[perf] * trans_mult;
         }
 
@@ -1345,7 +1345,12 @@ namespace Opm
         const auto& connection = this->well_ecl_.getConnections()[ws.perf_data.ecl_index[perf]];
         // viscosity is evaluated at connection pressure
         const double connection_pressure = ws.perf_data.pressure[perf];
-        const double mu = FluidSystem::gasPvt().viscosity(this->pvtRegionIdx(), ws.temperature, connection_pressure, getValue(intQuants.fluidState().Rv()), getValue(intQuants.fluidState().Rvw()));
+
+        const auto& rv = getValue(intQuants.fluidState().Rv());
+        const double psat = FluidSystem::gasPvt().saturationPressure(this->pvtRegionIdx(), ws.temperature, rv);
+        const double mu = connection_pressure < psat ?
+                                FluidSystem::gasPvt().saturatedViscosity(this->pvtRegionIdx(), ws.temperature, connection_pressure) :
+                                FluidSystem::gasPvt().viscosity(this->pvtRegionIdx(), ws.temperature, connection_pressure, rv, getValue(intQuants.fluidState().Rvw()));
         const double phi = getValue(intQuants.porosity());
         //double k = connection.Kh()/h * trans_mult;
         double Kh = connection.Kh()* trans_mult;
@@ -1378,7 +1383,11 @@ namespace Opm
             const double trans_mult = simulator.problem().template rockCompTransMultiplier<double>(intQuants, cell_idx);
             // viscosity is evaluated at connection pressure
             const double connection_pressure = ws.perf_data.pressure[perf];
-            const double mu = FluidSystem::gasPvt().viscosity(this->pvtRegionIdx(), ws.temperature, connection_pressure, getValue(intQuants.fluidState().Rv()), getValue(intQuants.fluidState().Rvw()));
+            const auto& rv = getValue(intQuants.fluidState().Rv());
+            const double psat = FluidSystem::gasPvt().saturationPressure(this->pvtRegionIdx(), ws.temperature, rv);
+            const double mu = connection_pressure < psat ?
+                                    FluidSystem::gasPvt().saturatedViscosity(this->pvtRegionIdx(), ws.temperature, connection_pressure) :
+                                    FluidSystem::gasPvt().viscosity(this->pvtRegionIdx(), ws.temperature, connection_pressure, rv, getValue(intQuants.fluidState().Rvw()));
             const double phi = getValue(intQuants.porosity());
             const auto& connection = this->well_ecl_.getConnections()[perf_data.ecl_index[perf]];
             double Kh = connection.Kh()* trans_mult;

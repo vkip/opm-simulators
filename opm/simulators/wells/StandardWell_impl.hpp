@@ -120,6 +120,7 @@ namespace Opm
                     const std::vector<Value>& mob,
                     const Value& bhp,
                     const double Tw,
+                    const double Twg,
                     const int perf,
                     const bool allow_cf,
                     std::vector<Value>& cq_s,
@@ -203,6 +204,7 @@ namespace Opm
                         rsw,
                         b_perfcells_dense,
                         Tw,
+                        Twg,
                         perf,
                         allow_cf,
                         skin_pressure,
@@ -225,6 +227,7 @@ namespace Opm
                     const Value& rsw,
                     std::vector<Value>& b_perfcells_dense,
                     const double Tw,
+                    const double Twg,
                     const int perf,
                     const bool allow_cf,
                     const Value& skin_pressure,
@@ -249,8 +252,13 @@ namespace Opm
 
             // compute component volumetric rates at standard conditions
             for (int componentIdx = 0; componentIdx < this->numComponents(); ++componentIdx) {
-                const Value cq_p = - Tw * (mob[componentIdx] * drawdown);
-                cq_s[componentIdx] = b_perfcells_dense[componentIdx] * cq_p;
+                if (FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx) && componentIdx==Indices::canonicalToActiveComponentIndex(FluidSystem::gasCompIdx)) {
+                    const Value cq_p = - Twg * (mob[componentIdx] * drawdown);
+                    cq_s[componentIdx] = b_perfcells_dense[componentIdx] * cq_p;
+                } else {
+                    const Value cq_p = - Tw * (mob[componentIdx] * drawdown);
+                    cq_s[componentIdx] = b_perfcells_dense[componentIdx] * cq_p;
+                }
             }
 
             if (FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx) && FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx)) {
@@ -497,7 +505,8 @@ namespace Opm
         double trans_mult = ebosSimulator.problem().template wellTransMultiplier<double>(intQuants,  cell_idx);
         const auto& wellstate_nupcol = ebosSimulator.problem().wellModel().nupcolWellState().well(this->index_of_well_);
         const double Tw = this->wellIndex(perf, intQuants, trans_mult, wellstate_nupcol);
-        computePerfRate(intQuants, mob, bhp, Tw, perf, allow_cf,
+        const double Twg = this->wellIndex(perf, intQuants, trans_mult, wellstate_nupcol, true);
+        computePerfRate(intQuants, mob, bhp, Tw, Twg, perf, allow_cf,
                         cq_s, perf_rates, deferred_logger);
 
         auto& ws = well_state.well(this->index_of_well_);
@@ -1367,10 +1376,11 @@ namespace Opm
             double trans_mult = ebosSimulator.problem().template wellTransMultiplier<double>(intQuants, cell_idx);
             const auto& wellstate_nupcol = ebosSimulator.problem().wellModel().nupcolWellState().well(this->index_of_well_);
             const double Tw = this->wellIndex(perf, intQuants, trans_mult, wellstate_nupcol);
+            const double Twg = this->wellIndex(perf, intQuants, trans_mult, wellstate_nupcol, true);
 
             std::vector<Scalar> cq_s(this->num_components_, 0.);
             PerforationRates perf_rates;
-            computePerfRate(intQuants, mob, bhp, Tw, perf, allow_cf,
+            computePerfRate(intQuants, mob, bhp, Tw, Twg, perf, allow_cf,
                             cq_s, perf_rates, deferred_logger);
 
             for(int p = 0; p < np; ++p) {
@@ -1670,7 +1680,7 @@ namespace Opm
             PerforationRates perf_rates;
             double trans_mult = ebos_simulator.problem().template wellTransMultiplier<double>(int_quant, cell_idx);
             const double Tw = this->well_index_[perf] * trans_mult;
-            computePerfRate(int_quant, mob, bhp, Tw, perf, allow_cf, cq_s,
+            computePerfRate(int_quant, mob, bhp, Tw, Tw, perf, allow_cf, cq_s,  // Twg??
                             perf_rates, deferred_logger);
             // TODO: make area a member
             const double area = 2 * M_PI * this->perf_rep_radius_[perf] * this->perf_length_[perf];
@@ -2275,8 +2285,9 @@ namespace Opm
             double trans_mult = ebosSimulator.problem().template wellTransMultiplier<double>(intQuants,  cell_idx);
             const auto& wellstate_nupcol = ebosSimulator.problem().wellModel().nupcolWellState().well(this->index_of_well_);
             const double Tw = this->wellIndex(perf, intQuants, trans_mult, wellstate_nupcol);
+            const double Twg = this->wellIndex(perf, intQuants, trans_mult, wellstate_nupcol, true);
             PerforationRates perf_rates;
-            computePerfRate(intQuants, mob, bhp.value(), Tw, perf, allow_cf,
+            computePerfRate(intQuants, mob, bhp.value(), Tw, Twg, perf, allow_cf,
                             cq_s, perf_rates, deferred_logger);
             for (int comp = 0; comp < this->num_components_; ++comp) {
                 well_q_s[comp] += cq_s[comp];
