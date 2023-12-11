@@ -202,7 +202,8 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
               matrix_(nullptr)
         {
             parameters_.resize(1);
-            parameters_[0].template init<TypeTag>(simulator_.vanguard().eclState().getSimulationConfig().useCPR());
+            // Use CPR in this version, since drift compensation is off by default.
+            parameters_[0].template init<TypeTag>(simulator_.vanguard().eclState().getSimulationConfig().useCPR() || true);
             initialize();
         }
 
