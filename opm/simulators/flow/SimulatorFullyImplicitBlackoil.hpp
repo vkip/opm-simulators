@@ -98,8 +98,14 @@ template<class TypeTag>
 struct EnableTerminalOutput<TypeTag, TTag::FlowProblem> {
     static constexpr bool value = true;
 };
+
 template<class TypeTag>
 struct EnableAdaptiveTimeStepping<TypeTag, TTag::FlowProblem> {
+    static constexpr bool value = true;
+};
+
+template<class TypeTag>
+struct EnableTuning<TypeTag, TTag::EclFlowProblem> {
     static constexpr bool value = true;
 };
 
