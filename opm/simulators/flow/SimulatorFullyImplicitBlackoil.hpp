@@ -108,7 +108,7 @@ struct EnableAdaptiveTimeStepping<TypeTag, TTag::EclFlowProblem> {
 };
 template<class TypeTag>
 struct EnableTuning<TypeTag, TTag::EclFlowProblem> {
-    static constexpr bool value = false;
+    static constexpr bool value = true;
 };
 
 template <class TypeTag>

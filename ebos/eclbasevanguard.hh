@@ -145,7 +145,7 @@ struct EnableOpmRstFile<TypeTag, TTag::EclBaseVanguard> {
 };
 template<class TypeTag>
 struct ParsingStrictness<TypeTag, TTag::EclBaseVanguard> {
-    static constexpr auto value = "normal";
+    static constexpr auto value = "low";
 };
 template<class TypeTag>
 struct SchedRestart<TypeTag, TTag::EclBaseVanguard> {
