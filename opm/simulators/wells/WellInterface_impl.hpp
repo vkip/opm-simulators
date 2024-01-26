@@ -327,7 +327,7 @@ namespace Opm
                 }
             }
             const double bhp_diff = (this->isInjector())? inj_limit - bhp: bhp - prod_limit;
-            if (bhp_diff > 0){
+            if (bhp_diff > 0 && changed_to_stopped_this_step_){
                 this->openWell();
                 well_state.well(this->index_of_well_).bhp = (this->isInjector())? inj_limit : prod_limit;
                 if (has_thp) {
@@ -813,11 +813,11 @@ namespace Opm
         this->changed_to_open_this_step_ = false;
         const bool well_operable = this->operability_status_.isOperableAndSolvable();
 
-        if (!well_operable && old_well_operable) {
+        if (!well_operable && old_well_operable && !this->wellIsStopped()) {
             deferred_logger.info(" well " + this->name() + " gets STOPPED during iteration ");
             this->stopWell();
             changed_to_stopped_this_step_ = true;
-        } else if (well_operable && !old_well_operable) {
+        } else if (well_operable && !old_well_operable && changed_to_stopped_this_step_) {
             deferred_logger.info(" well " + this->name() + " gets REVIVED during iteration ");
             this->openWell();
             changed_to_stopped_this_step_ = false;
