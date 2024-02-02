@@ -35,7 +35,7 @@ template<class TypeTag>
 struct EnableEnergy<TypeTag, TTag::EclFlowEnergyProblem> {
     static constexpr bool value = true;
 };
-}}
+}} // namespace Opm { namespace Properties
 
 namespace Opm {
 

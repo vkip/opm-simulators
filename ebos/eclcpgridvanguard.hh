@@ -201,7 +201,7 @@ public:
         const auto& phases = runspec.phases();
 
         // check for correct module setup
-        if (config.isThermal()) {
+        if (config.isThermal() || config.isTemperature()) {
             if (getPropValue<TypeTag, Properties::EnableEnergy>() == false) {
                 throw std::runtime_error("Input specifies energy while simulator has disabled it, try xxx_energy");
             }

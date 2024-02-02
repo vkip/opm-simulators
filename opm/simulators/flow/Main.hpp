@@ -210,7 +210,7 @@ private:
         //
         // TODO: make sure that no illegal combinations like thermal and
         //       twophase are requested.
-        const bool thermal = eclipseState_->getSimulationConfig().isThermal();
+        const bool thermal = eclipseState_->getSimulationConfig().isThermal() || eclipseState_->getSimulationConfig().isTemperature();
 
         // Single-phase case
         if (rspec.micp()) {

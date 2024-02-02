@@ -2530,6 +2530,7 @@ namespace Opm {
         double cellDensity;
         double perfPhaseRate;
         const int nw = numLocalWells();
+        const bool include_enthalpy_work = !this->eclState().getSimulationConfig().isTemperature();
         for (auto wellID = 0*nw; wellID < nw; ++wellID) {
             const Well& well = wells_ecl_[wellID];
             if (well.isInjector())
@@ -2558,7 +2559,7 @@ namespace Opm {
                     if (!FluidSystem::phaseIsActive(phaseIdx)) {
                         continue;
                     }
-                    cellInternalEnergy = fs.enthalpy(phaseIdx).value() - fs.pressure(phaseIdx).value() / fs.density(phaseIdx).value();
+                    cellInternalEnergy = fs.enthalpy(phaseIdx).value() - include_enthalpy_work * fs.pressure(phaseIdx).value() / fs.density(phaseIdx).value();
                     cellBinv = fs.invB(phaseIdx).value();
                     cellDensity = fs.density(phaseIdx).value();
                     perfPhaseRate = perf_phase_rate[ perf*np + phaseIdx ];
