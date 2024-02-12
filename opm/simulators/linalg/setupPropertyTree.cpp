@@ -78,11 +78,11 @@ setupPropertyTree(FlowLinearSolverParameters p, // Note: copying the parameters 
     if ((conf == "cpr") || (conf == "cprw")) {
         if (!linearSolverMaxIterSet) {
             // Use our own default unless it was explicitly overridden by user.
-            p.linear_solver_maxiter_ = 30;
+            p.linear_solver_maxiter_ = 20;
         }
         if (!linearSolverReductionSet) {
             // Use our own default unless it was explicitly overridden by user.
-            p.linear_solver_reduction_ = 0.003;
+            p.linear_solver_reduction_ = 0.005;
         }
         return setupCPRW(conf, p);
     }
