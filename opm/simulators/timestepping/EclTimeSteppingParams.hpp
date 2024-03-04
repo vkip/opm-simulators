@@ -69,7 +69,7 @@ struct TimeStepAfterEventInDays {
 
 template<class TypeTag>
 struct EnableTuning<TypeTag, TTag::EclTimeSteppingParameters> {
-    static constexpr bool value = false;
+    static constexpr bool value = true;
 };
 
 template<class TypeTag>
