@@ -433,6 +433,17 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
             iterations_ = result.iterations;
             converged_ = result.converged;
             if(!converged_){
+                const int verbosity = prm_[activeSolverNum_].get("verbosity", 0);
+                const bool write_matrix = verbosity > 10;
+                // If verbosity==9 write only non-converged matrices
+                // NB! Assumes solve does not modified matrix or rhs (@TODO: Check!)
+                if (!write_matrix && verbosity==9) {
+                    Helper::writeSystem(simulator_, //simulator is only used to get names
+                                        getMatrix(),
+                                        *rhs_,
+                                        comm_.get());
+                }
+
                 if(result.reduction < parameters_[activeSolverNum_].relaxed_linear_solver_reduction_){
                     std::stringstream ss;
                     ss<< "Full linear solver tolerance not achieved. The reduction is:" << result.reduction

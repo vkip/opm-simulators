@@ -842,6 +842,10 @@ namespace Opm {
             IsNumericalAquiferCell isNumericalAquiferCell(gridView.grid());
 
             OPM_BEGIN_PARALLEL_TRY_CATCH();
+            // Also find cell with largest CNV error and report to the debug file
+            int max_cnv_idx = -1;
+            double max_cnv = 0.0;
+
             for (const auto& elem : elements(gridView, Dune::Partitions::interior))
             {
                 // Skip cells of numerical Aquifer
@@ -861,12 +865,42 @@ namespace Opm {
                     using std::abs;
                     Scalar CNV = cellResidual[eqIdx] * dt * B_avg[eqIdx] / pvValue;
                     cnvViolated = cnvViolated || (abs(CNV) > param_.tolerance_cnv_);
+
+                    const double abs_cnv = static_cast<double>(std::abs(CNV));
+                    if (abs_cnv > max_cnv) {
+                        max_cnv = abs_cnv;
+                        max_cnv_idx = static_cast<int>(cell_idx);
+                    }
                 }
 
                 if (cnvViolated)
                 {
                     errorPV += pvValue;
                 }
+            }
+
+            double global_max_cnv = max_cnv;
+            int max_rank = 0;
+            int global_max_cnv_idx = max_cnv_idx;
+            if (grid_.comm().size() > 1) {
+                global_max_cnv = grid_.comm().max(max_cnv);
+                max_rank = -1;
+                global_max_cnv_idx = -1;
+                if (max_cnv == global_max_cnv) {
+                    max_rank = grid_.comm().rank();
+                    const std::vector<int>& l2g = simulator_.problem().eclWriter()->collectOnIORank().localIdxToGlobalIdxMapping();
+                    global_max_cnv_idx = l2g[max_cnv_idx];
+                }
+                max_rank = grid_.comm().max(max_rank);
+                global_max_cnv_idx = grid_.comm().max(global_max_cnv_idx);
+            }
+
+            if (simulator_.problem().eclWriter()->collectOnIORank().isIORank()) {
+                const auto& inputGrid = simulator_.vanguard().eclState().getInputGrid();
+                const auto global_index = inputGrid.getGlobalIndex(global_max_cnv_idx);
+                const std::array<int, 3> ijk = simulator_.vanguard().eclState().gridDims().getIJK(global_index);
+                OpmLog::debug(fmt::format("........Largest CNV was {:.5e} in cell {} (1-IDX: {},{},{}) on rank {}",
+                                      global_max_cnv, global_max_cnv_idx, ijk[0]+1, ijk[1]+1, ijk[2]+1, max_rank));
             }
 
             OPM_END_PARALLEL_TRY_CATCH("BlackoilModel::ComputeCnvError() failed: ", grid_.comm());
@@ -975,9 +1009,11 @@ namespace Opm {
                             OpmLog::debug("Too large residual for " + this->compNames_.name(compIdx) + " equation.");
                         }
                     } else if (res[ii] < 0.0) {
-                        report.setReservoirFailed({types[ii], CR::Severity::Normal, compIdx});
-                        if ( terminal_output_ ) {
-                            OpmLog::debug("Negative residual for " + this->compNames_.name(compIdx) + " equation.");
+                        if (ii==0 || std::abs(res[ii]) > tol[ii]) {
+                            report.setReservoirFailed({types[ii], CR::Severity::Normal, compIdx});
+                            if ( terminal_output_ ) {
+                                OpmLog::debug("Negative residual for " + this->compNames_.name(compIdx) + " equation.");
+                            }
                         }
                     } else if (res[ii] > tol[ii]) {
                         report.setReservoirFailed({types[ii], CR::Severity::Normal, compIdx});
