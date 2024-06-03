@@ -1729,6 +1729,8 @@ updateGuideRatesForWells(const Schedule& schedule,
                          GuideRate* guideRate)
 {
     for (const auto& well : schedule.getWells(reportStepIdx)) {
+        if (well.getStatus() == Well::Status::SHUT) continue;
+
         std::array<Scalar,3> potentials{};
         auto& [oilpot, gaspot, waterpot] = potentials;
 
