@@ -114,7 +114,7 @@ partiallySupported()
          {
             "GEFAC",
             {
-               {3,{true, allow_values<std::string> {"YES"}, "GEFAC(GRPNETWK): Extended Network Model efficiency NO option not implemented"}}, // TRANSFER_EXT_NET
+               {3,{true, allow_values<std::string> {"YES", "NO"}, "GEFAC(GRPNETWK): should be set to either YES or NO"}}, // TRANSFER_EXT_NET
             },
          },
          {
@@ -284,7 +284,7 @@ partiallySupported()
          {
             "WEFAC",
             {
-               {3,{true, allow_values<std::string> {"YES"}, "WEFAC(WELNETWK): only the YES option is supported"}}, // EXTENDED_NETWORK_OPT
+               {3,{true, allow_values<std::string> {"YES","NO"}, "WEFAC(WELNETWK): value must be YES or NO"}}, // EXTENDED_NETWORK_OPT
             },
          },
          {
