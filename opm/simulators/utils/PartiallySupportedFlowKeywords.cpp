@@ -114,7 +114,7 @@ partiallySupported()
          {
             "GEFAC",
             {
-               {3,{true, allow_values<std::string> {"YES", "NO"}, "GEFAC(GRPNETWK): should be set to either YES or NO"}}, // TRANSFER_EXT_NET
+               {3,{true, allow_values<std::string> {"YES", "NO"}, "GEFAC(GRPNETWK): should be set to either YES or NO"}}, // USE_GEFAC_IN_NETWORK
             },
          },
          {
@@ -284,7 +284,7 @@ partiallySupported()
          {
             "WEFAC",
             {
-               {3,{true, allow_values<std::string> {"YES","NO"}, "WEFAC(WELNETWK): value must be YES or NO"}}, // EXTENDED_NETWORK_OPT
+               {3,{true, allow_values<std::string> {"YES","NO"}, "WEFAC(WELNETWK): value must be YES or NO"}}, // USE_WEFAC_IN_NETWORK
             },
          },
          {
