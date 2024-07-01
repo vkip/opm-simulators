@@ -213,6 +213,10 @@ void Main::readDeck(const std::string& deckFilename,
                               outputMode,
                               outputCout_, "STDOUT_LOGGER", allRanksDbgPrtLog);
 
+    if (dumpEnv_) {
+            dumpEnvToDebug();
+    }
+
     if (outputCout_) {
         printPRTHeader(FlowGenericVanguard::comm().size(), numThreads,
                        parameters, moduleVersion, compileTimestamp);

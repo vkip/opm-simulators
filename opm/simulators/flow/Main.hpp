@@ -375,8 +375,10 @@ private:
         
         int mpiRank = FlowGenericVanguard::comm().rank();
         outputCout_ = false;
-        if (mpiRank == 0)
+        if (mpiRank == 0) {
             outputCout_ = Parameters::get<PreTypeTag, Properties::EnableTerminalOutput>();
+            dumpEnv_ = Parameters::get<PreTypeTag, Properties::DebugDumpEnv>();
+        }
 
         if (deckFilename.empty()) {
             if (mpiRank == 0) {
@@ -742,6 +744,7 @@ private:
     char** argv_{nullptr};
     bool ownMPI_{true}; //!< True if we "own" MPI and should init / finalize
     bool outputCout_{false};
+    bool dumpEnv_{false};
     bool outputFiles_{false};
     double setupTime_{0.0};
     std::string deckFilename_{};

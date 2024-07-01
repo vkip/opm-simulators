@@ -59,6 +59,12 @@
 
 namespace Opm::Properties {
 
+template <class TypeTag, class MyTypeTag>
+struct DebugDumpEnv
+{
+    using type = UndefinedProperty;
+};
+
 template<class TypeTag, class MyTypeTag>
 struct EnableAdaptiveTimeStepping {
     using type = UndefinedProperty;
@@ -98,6 +104,12 @@ template<class TypeTag>
 struct EnableTerminalOutput<TypeTag, TTag::FlowProblem> {
     static constexpr bool value = true;
 };
+
+template<class TypeTag>
+struct DebugDumpEnv<TypeTag, TTag::FlowProblem> {
+    static constexpr bool value = false;
+};
+
 template<class TypeTag>
 struct EnableAdaptiveTimeStepping<TypeTag, TTag::FlowProblem> {
     static constexpr bool value = true;
@@ -220,6 +232,8 @@ public:
 
         Parameters::registerParam<TypeTag, Properties::EnableTerminalOutput>
             ("Print high-level information about the simulation's progress to the terminal");
+        Parameters::registerParam<TypeTag, Properties::DebugDumpEnv>
+            ("Dump all environment variables to the beginning of the .DGB file");
         Parameters::registerParam<TypeTag, Properties::EnableAdaptiveTimeStepping>
             ("Use adaptive time stepping between report steps");
         Parameters::registerParam<TypeTag, Properties::OutputExtraConvergenceInfo>

@@ -30,6 +30,9 @@ namespace Opm {
 struct SimulatorReport;
 struct SimulatorReportSingle;
 
+// Dump all environment variables to the DEBUG files.
+void dumpEnvToDebug();
+
 // Print an ASCII-art header to the PRT and DEBUG files.
 void printPRTHeader(const int nprocs, const int nthreads,
                     const std::string& parameters,

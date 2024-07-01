@@ -29,6 +29,7 @@
 
 #include <fmt/format.h>
 
+#include <cstdlib>
 #include <ctime>
 #include <iomanip>
 #include <iostream>
@@ -48,7 +49,22 @@ unsigned long long getTotalSystemMemory()
 
 }
 
+extern char **environ;
 namespace Opm {
+
+void dumpEnvToDebug() {
+    std::ostringstream ss;
+    ss << "***********************************************************************" << std::endl;
+    ss << " ENVIRONMENT VARIABLES" << std::endl;
+    ss << "***********************************************************************" << std::endl;
+    int i=0;
+    while (environ[i]) {
+        ss << environ[i++] << std::endl;
+    }
+    ss << "***********************************************************************" << std::endl;
+    ss << std::endl;
+    OpmLog::debug(ss.str());
+}
 
 void printPRTHeader(const int nprocs, const int nthreads,
                     const std::string& parameters,
