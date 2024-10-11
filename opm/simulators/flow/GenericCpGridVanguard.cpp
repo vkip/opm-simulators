@@ -197,44 +197,47 @@ doLoadBalance_(const Dune::EdgeWeightMethod             edgeWeightsMethod,
         const auto wells = ((mpiSize > 1) || partitionJacobiBlocks)
             ? schedule.getActiveWellsAtEnd()
             : std::vector<Well>{};
+        const auto inactive_wells = ((mpiSize > 1 || partitionJacobiBlocks))
+            ? schedule.getInactiveWellsAtEnd()
+            : std::vector<Well>{};
         const auto& possibleFutureConnections = schedule.getPossibleFutureConnections();
         // Distribute the grid and switch to the distributed view.
         if (mpiSize > 1) {
             this->distributeGrid(edgeWeightsMethod, ownersFirst, partitionMethod,
                                  serialPartitioning, enableDistributedWells,
                                  imbalanceTol, loadBalancerSet != 0,
-                                 faceTrans, wells,
+                                 faceTrans, wells, inactive_wells,
                                  possibleFutureConnections,
                                  eclState1, parallelWells);
         }
 
         // Add inactive wells to all ranks with connections (not solved, so OK even without distributed wells)
         // @NOTE: Approach below is just for testing, there has to be a better way...
-        std::unordered_set<unsigned> cellOnRank;
-        const auto& global_cells = this->grid_->globalCell();
-        for (const auto cell : global_cells) cellOnRank.insert(cell);
-        const auto& comm = this->grid_->comm();
-        const auto nranks = comm.size();
-        const auto rank = comm.rank();
-        const auto inactive_well_names = schedule.getInactiveWellNamesAtEnd();
-        for (const auto& well_name : inactive_well_names) {
-            const auto& well = schedule.getWell(well_name, schedule.size()-1);
-            std::vector<int> well_on_rank(nranks, 0);
-            for (const auto& conn: well.getConnections()) {
-                if (cellOnRank.count(conn.global_index()) > 0) {
-                    well_on_rank[rank] = 1;
-                    break;
-                }
-            }
-            std::vector<int> well_on_rank_global(nranks, 0);
-            comm.max(&well_on_rank[0], nranks);
-            for (int i=0; i<nranks; ++i) {
-                if (well_on_rank_global[i]) {
-                    parallelWells.emplace_back(well_name, i);
-                }
-            }
-        }
-        std::sort(parallelWells.begin(), parallelWells.end());
+        // std::unordered_set<unsigned> cellOnRank;
+        // const auto& global_cells = this->grid_->globalCell();
+        // for (const auto cell : global_cells) cellOnRank.insert(cell);
+        // const auto& comm = this->grid_->comm();
+        // const auto nranks = comm.size();
+        // const auto rank = comm.rank();
+        // const auto inactive_well_names = schedule.getInactiveWellNamesAtEnd();
+        // for (const auto& well_name : inactive_well_names) {
+        //     const auto& well = schedule.getWell(well_name, schedule.size()-1);
+        //     std::vector<int> well_on_rank(nranks, 0);
+        //     for (const auto& conn: well.getConnections()) {
+        //         if (cellOnRank.count(conn.global_index()) > 0) {
+        //             well_on_rank[rank] = 1;
+        //             break;
+        //         }
+        //     }
+        //     std::vector<int> well_on_rank_global(nranks, 0);
+        //     comm.max(&well_on_rank[0], nranks);
+        //     for (int i=0; i<nranks; ++i) {
+        //         if (well_on_rank_global[i]) {
+        //             parallelWells.emplace_back(well_name, i);
+        //         }
+        //     }
+        // }
+        // std::sort(parallelWells.begin(), parallelWells.end());
 
         // Calling Schedule::filterConnections would remove any perforated
         // cells that exist only on other ranks even in the case of
@@ -321,6 +324,7 @@ distributeGrid(const Dune::EdgeWeightMethod                          edgeWeights
                const bool                                            loadBalancerSet,
                const std::vector<double>&                            faceTrans,
                const std::vector<Well>&                              wells,
+               const std::vector<Well>&                              inactive_wells,
                const std::unordered_map<std::string, std::set<int>>& possibleFutureConnections,
                EclipseState&                                         eclState1,
                FlowGenericVanguard::ParallelWellStruct&              parallelWells)
@@ -331,7 +335,7 @@ distributeGrid(const Dune::EdgeWeightMethod                          edgeWeights
         this->distributeGrid(edgeWeightsMethod, ownersFirst, partitionMethod,
                              serialPartitioning, enableDistributedWells,
                              imbalanceTol, loadBalancerSet, faceTrans,
-                             wells, possibleFutureConnections, eclState, parallelWells);
+                             wells, inactive_wells, possibleFutureConnections, eclState, parallelWells);
     }
     else {
         const auto message = std::string {
@@ -359,6 +363,7 @@ distributeGrid(const Dune::EdgeWeightMethod                          edgeWeights
                const bool                                            loadBalancerSet,
                const std::vector<double>&                            faceTrans,
                const std::vector<Well>&                              wells,
+               const std::vector<Well>&                              inactive_wells,
                const std::unordered_map<std::string, std::set<int>>& possibleFutureConnections,
                ParallelEclipseState*                                 eclState,
                FlowGenericVanguard::ParallelWellStruct&              parallelWells)
@@ -383,6 +388,7 @@ distributeGrid(const Dune::EdgeWeightMethod                          edgeWeights
                                                  addCornerCells, overlapLayers));
     }
     else {
+        const std::vector<Well>* inactive_wells_ptr = inactive_wells.size() ? &inactive_wells : nullptr;
         parallelWells =
             std::get<1>(this->grid_->loadBalance(handle, edgeWeightsMethod,
                                                  &wells, possibleFutureConnections,
@@ -390,7 +396,8 @@ distributeGrid(const Dune::EdgeWeightMethod                          edgeWeights
                                                  faceTrans.data(), ownersFirst,
                                                  addCornerCells, overlapLayers,
                                                  partitionMethod, imbalanceTol,
-                                                 enableDistributedWells));
+                                                 enableDistributedWells,
+                                                 inactive_wells_ptr));
     }
 }
 

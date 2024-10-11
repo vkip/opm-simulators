@@ -174,6 +174,7 @@ private:
                         const bool                                            loadBalancerSet,
                         const std::vector<double>&                            faceTrans,
                         const std::vector<Well>&                              wells,
+                        const std::vector<Well>&                              inactive_wells,
                         const std::unordered_map<std::string, std::set<int>>& possibleFutureConnections,
                         EclipseState&                                         eclState,
                         FlowGenericVanguard::ParallelWellStruct&              parallelWells);
@@ -187,6 +188,7 @@ private:
                         const bool                                            loadBalancerSet,
                         const std::vector<double>&                            faceTrans,
                         const std::vector<Well>&                              wells,
+                        const std::vector<Well>&                              inactive_wells,
                         const std::unordered_map<std::string, std::set<int>>& possibleFutureConnections,
                         ParallelEclipseState*                                 eclState,
                         FlowGenericVanguard::ParallelWellStruct&              parallelWells);
