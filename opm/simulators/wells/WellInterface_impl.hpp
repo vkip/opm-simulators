@@ -580,7 +580,7 @@ namespace Opm
         // if well is stopped, check if we can reopen
         if (this->wellIsStopped()) {
             this->openWell();
-            auto bhp_target = estimateOperableBhp(simulator, dt, well_state, summary_state, deferred_logger);
+            auto [bhp_target, operable_in_network] = estimateOperableBhp(simulator, dt, well_state, summary_state, deferred_logger);
             if (!bhp_target.has_value()) {
                 // no intersection with ipr
                 const auto msg = fmt::format("estimateOperableBhp: Did not find operable BHP for well {}", this->name());
@@ -590,11 +590,18 @@ namespace Opm
                 solveWellWithZeroRate(simulator, dt, well_state, deferred_logger);
                 this->stopWell();
             } else {
-                // solve well with the estimated target bhp (or limit)
-                ws.thp = this->getTHPConstraint(summary_state);
                 const Scalar bhp = std::max(bhp_target.value(),
-                                            static_cast<Scalar>(prod_controls.bhp_limit));
-                solveWellWithBhp(simulator, dt, bhp, well_state, deferred_logger);
+                            static_cast<Scalar>(prod_controls.bhp_limit));
+                converged = solveWellWithBhp(simulator, dt, bhp, well_state, deferred_logger);
+                // If not operable in network we just use the bhp solution and defer actual solving with THP constraint until next iteration (hopefully?)
+                if (!operable_in_network) {
+                    this->operability_status_.can_obtain_bhp_with_thp_limit = false;
+                    this->operability_status_.obey_thp_limit_under_bhp_limit = false;
+                    return converged;
+                } else {
+                    // solve well with the estimated target bhp (or limit)
+                    ws.thp = this->getTHPConstraint(summary_state);
+                }
             }
         }
         // solve well-equation
@@ -631,7 +638,7 @@ namespace Opm
             // Well did not converge, switch to explicit fractions
             this->operability_status_.use_vfpexplicit = true;
             this->openWell();
-            auto bhp_target = estimateOperableBhp(simulator, dt, well_state, summary_state, deferred_logger);
+            auto [bhp_target, operable_in_network] = estimateOperableBhp(simulator, dt, well_state, summary_state, deferred_logger);
             if (!bhp_target.has_value()) {
                 // well can't operate using explicit fractions
                 is_operable = false;
@@ -641,17 +648,25 @@ namespace Opm
             } else {
                 // solve well with the estimated target bhp (or limit)
                 const Scalar bhp = std::max(bhp_target.value(),
-                                            static_cast<Scalar>(prod_controls.bhp_limit));
-                solveWellWithBhp(simulator, dt, bhp, well_state, deferred_logger);
-                ws.thp = this->getTHPConstraint(summary_state);
-                const auto msg = fmt::format("Well {} did not converge, re-solving with explicit fractions for VFP caculations.", this->name());
-                deferred_logger.debug(msg);
-                converged = this->iterateWellEqWithSwitching(simulator, dt,
-                                                             inj_controls,
-                                                             prod_controls,
-                                                             well_state,
-                                                             group_state,
-                                                             deferred_logger);
+                            static_cast<Scalar>(prod_controls.bhp_limit));
+                converged = solveWellWithBhp(simulator, dt, bhp, well_state, deferred_logger);
+                // If not operable in network we just use the bhp solution and defer actual solving with THP constraint until next iteration (hopefully?)
+                if (!operable_in_network) {
+                    this->operability_status_.can_obtain_bhp_with_thp_limit = false;
+                    this->operability_status_.obey_thp_limit_under_bhp_limit = false;
+                    return converged;
+                } else {
+                    ws.thp = this->getTHPConstraint(summary_state);
+                    const auto msg = fmt::format("Well {} did not converge, re-solving with explicit fractions for VFP caculations.", this->name());
+                    deferred_logger.debug(msg);
+
+                    converged = this->iterateWellEqWithSwitching(simulator, dt,
+                                                                inj_controls,
+                                                                prod_controls,
+                                                                well_state,
+                                                                group_state,
+                                                                deferred_logger);
+                }
             }
         }
         // update operability
@@ -662,7 +677,7 @@ namespace Opm
     }
 
     template<typename TypeTag>
-    std::optional<typename WellInterface<TypeTag>::Scalar>
+    std::tuple<std::optional<typename WellInterface<TypeTag>::Scalar>, bool>
     WellInterface<TypeTag>::
     estimateOperableBhp(const Simulator& simulator,
                         const double dt,
@@ -686,12 +701,78 @@ namespace Opm
         // Solve
         const bool converged = solveWellWithBhp(simulator, dt, bhp_min, well_state, deferred_logger);
         if (!converged || this->wellIsStopped()) {
-            return std::nullopt;
+            return {std::nullopt, true};
         }
         this->updateIPRImplicit(simulator, well_state, deferred_logger);
         auto rates = well_state.well(this->index_of_well_).surface_rates;
         this->adaptRatesForVFP(rates);
-        return WellBhpThpCalculator(*this).estimateStableBhp(well_state, this->well_ecl_, rates, this->getRefDensity(), summary_state);
+        //return WellBhpThpCalculator(*this).estimateStableBhp(well_state, this->well_ecl_, rates, this->getRefDensity(), summary_state);
+        const auto stable_bhp = WellBhpThpCalculator(*this).estimateStableBhp(well_state, this->well_ecl_, rates, this->getRefDensity(), summary_state);
+        if (!stable_bhp.has_value() || !(this->getDynamicThpLimit() && this->getDynamicThpCalculator().initialized())) {
+            return {stable_bhp, true};
+        }
+
+        // Do a final check for network wells.
+        // Using the IPR to compute the well rates, we look for bhp between stable_bhp and ws.bhp such that
+        // thp( q(x) ) >= network_limit( q(x) )  [with the rest of the network kept fixed]
+        assert(this->well_ecl_.isProducer());
+
+        const auto prod_controls = this->well_ecl_.productionControls(summary_state);
+        const auto& ws = well_state.well(this->indexOfWell());
+        const std::string msg1 = fmt::format("TEST123| Well {} about to check network operability: BHP limit = {:.2f} bar (ws.bhp = {:.2f} bar, ws.thp = {:.2f} bar, stable_bhp = {:.2f} bar)",
+            this->name(), prod_controls.bhp_limit*1.0e-5, ws.bhp*1.0e-5, ws.thp*1.0e-5, *stable_bhp);
+        deferred_logger.debug(msg1);
+
+        const auto& ipr_a = ws.implicit_ipr_a;
+        const auto& ipr_b = ws.implicit_ipr_b;
+        auto compute_rates_from_ipr = [&ipr_a, &ipr_b](const Scalar bhp, std::vector<Scalar>& irates) {
+            Scalar ratesum = 0.0;
+            irates.assign(3, 0.0);
+            for (auto i=0*irates.size(); i<3; ++i) {
+                irates[i] = -1*(ipr_a[i] - bhp*ipr_b[i]);
+                ratesum += irates[i];
+            }
+            return ratesum;
+        };
+
+        const Scalar a = std::min(*stable_bhp, ws.bhp);
+        const Scalar b = std::max(*stable_bhp, ws.bhp);
+        Scalar bhp = a;
+
+        std::vector<Scalar> ipr_rates(3, 0.0);
+        auto ratesum = compute_rates_from_ipr(bhp, ipr_rates);
+        // If the IPR is zero we revert to previous approach for now
+        if (std::abs(ratesum) < 1.0e-14) {
+            return {stable_bhp, true};
+        }
+
+        // Simple evaluations should be fast, so we just do brute force for now
+        const Scalar dp = 1.0e-1 * unit::barsa;
+        while (bhp <= b) {
+            const Scalar dynthp = this->getDynamicThpCalculator()(ipr_rates);
+            const Scalar wthp = WellBhpThpCalculator(*this).calculateThpFromBhp(ipr_rates,
+                                                                                bhp,
+                                                                                this->getRefDensity(),
+                                                                                this->getALQ(well_state),
+                                                                                prod_controls.thp_limit,
+                                                                                deferred_logger);
+
+            //const std::string msg2 = fmt::format("________ BHP = {:.2f} --> [ {:.2e},  {:.2e},  {:.2e} ] --> DynTHP = {:.2f}, WTHP = {:.2f}",
+            //    bhp*1.0e-5, ipr_rates[0]*86400, ipr_rates[1]*86400, ipr_rates[2]*86400, dynthp*1.0e-5, wthp*1.0e-5);
+            //deferred_logger.debug(msg2);
+
+            if (wthp >= dynthp) {
+                //this->dynamic_thp_limit_ = std::min(dynthp, this->getDynamicThpLimit().value());
+                //deferred_logger.debug(fmt::format("         ... found stable BHP = {:.2f} bar, dynamic_thp_limit={:.2f} bar ", bhp*1.0e-5, this->dynamic_thp_limit_.value()*1.0e-5));
+                deferred_logger.debug(fmt::format("         ... found stable BHP = {:.2f} bar, dynthp={:.2f} bar ", bhp*1.0e-5, dynthp*1.0e-5));
+                return {std::make_optional(bhp), true};
+            }
+            bhp += dp;
+            ratesum = compute_rates_from_ipr(bhp, ipr_rates);
+        }
+        deferred_logger.debug(fmt::format("          ... did NOT find a network-operable BHP!"));
+        return {stable_bhp, false};
+
     }
 
     template<typename TypeTag>

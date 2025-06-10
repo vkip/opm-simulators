@@ -437,6 +437,8 @@ template<class Scalar> class WellContributions;
 
             // Pre-step network solve at static reservoir conditions (group and well states might be updated)
             void doPreStepNetworkRebalance(DeferredLogger& deferred_logger);
+            // Update well network-thp calculators
+            void updateWellDynamicThpCalculatorRates();
 
             std::vector<Scalar> B_avg_{};
 

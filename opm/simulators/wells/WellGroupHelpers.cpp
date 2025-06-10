@@ -994,6 +994,107 @@ computeNetworkPressures(const Network::ExtNetwork& network,
 }
 
 template<class Scalar>
+std::map<std::string, const std::vector<Scalar>>
+WellGroupHelpers<Scalar>::
+computeNetworkNodeInflows(const Network::ExtNetwork& network,
+                        const WellState<Scalar>& well_state,
+                        const GroupState<Scalar>& group_state,
+                        const Schedule& schedule,
+                        const Parallel::Communication& comm,
+                        const int report_time_step)
+{
+    // TODO: Only dealing with production networks for now.
+    OPM_TIMEFUNCTION();
+    if (!network.active()) {
+        return {};
+    }
+
+    std::map<std::string, const std::vector<Scalar>> global_node_inflows;
+    auto roots = network.roots();
+    for (const auto& root : roots) {
+        // Fixed pressure nodes of the network are the roots of trees.
+        // Leaf nodes must correspond to groups in the group structure.
+        // Let us first find all leaf nodes of the network. We also
+        // create a vector of all nodes, ordered so that a child is
+        // always after its parent.
+        std::stack<std::string> children;
+        std::set<std::string> leaf_nodes;
+        std::vector<std::string> root_to_child_nodes;
+        //children.push(network.root().name());
+        children.push(root.get().name());
+        while (!children.empty()) {
+            const auto node = children.top();
+            children.pop();
+            root_to_child_nodes.push_back(node);
+            auto branches = network.downtree_branches(node);
+            if (branches.empty()) {
+                leaf_nodes.insert(node);
+            }
+            for (const auto& branch : branches) {
+                children.push(branch.downtree_node());
+            }
+        }
+        assert(children.empty());
+
+        // Starting with the leaf nodes of the network, get the flow rates
+        // from the corresponding groups.
+        std::map<std::string, std::vector<Scalar>> node_inflows;
+        const std::vector<Scalar> zero_rates(3, 0.0);
+        for (const auto& node : leaf_nodes) {
+            // Guard against empty leaf nodes (may not be present in GRUPTREE)
+            if (!group_state.has_production_rates(node)) {
+                node_inflows[node] = zero_rates;
+                continue;
+            }
+
+            node_inflows[node] = group_state.network_leaf_node_production_rates(node);
+            // Add the ALQ amounts to the gas rates if requested.
+            if (network.node(node).add_gas_lift_gas()) {
+                const auto& group = schedule.getGroup(node, report_time_step);
+                Scalar alq = 0.0;
+                for (const std::string& wellname : group.wells()) {
+                    const Well& well = schedule.getWell(wellname, report_time_step);
+                    if (well.isInjector() || !well_state.isOpen(wellname)) continue;
+                    const Scalar efficiency = well.getEfficiencyFactor(/*network*/ true) * well_state.getGlobalEfficiencyScalingFactor(wellname);
+                    const auto& well_index = well_state.index(wellname);
+                    if (well_index.has_value() && well_state.wellIsOwned(well_index.value(), wellname)) {
+                        alq += well_state.well(wellname).alq_state.get() * efficiency;
+                    }
+                }
+                alq = comm.sum(alq);
+                node_inflows[node][BlackoilPhases::Vapour] +=  alq;
+            }
+        }
+
+        // Accumulate in the network, towards the roots. Note that a
+        // root (i.e. fixed pressure node) can still be contributing
+        // flow towards other nodes in the network, i.e.  a node is
+        // the root of a subtree.
+        auto child_to_root_nodes = root_to_child_nodes;
+        std::reverse(child_to_root_nodes.begin(), child_to_root_nodes.end());
+        for (const auto& node : child_to_root_nodes) {
+            const auto upbranch = network.uptree_branch(node);
+            if (upbranch) {
+                // Add downbranch rates to upbranch.
+                std::vector<Scalar>& up = node_inflows[(*upbranch).uptree_node()];
+                const std::vector<Scalar>& down = node_inflows[node];
+                // We now also support NEFAC
+                const Scalar efficiency = network.node(node).efficiency();
+                if (up.empty()) {
+                    up = std::vector<Scalar>(down.size(), 0.0);
+                }
+                assert (up.size() == down.size());
+                for (std::size_t ii = 0; ii < up.size(); ++ii) {
+                    up[ii] += efficiency*down[ii];
+                }
+            }
+        }
+        global_node_inflows.insert(node_inflows.begin(), node_inflows.end());
+    }
+    return global_node_inflows;
+}
+
+template<class Scalar>
 GuideRate::RateVector
 WellGroupHelpers<Scalar>::
 getWellRateVector(const WellState<Scalar>& well_state,

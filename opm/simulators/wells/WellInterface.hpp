@@ -63,6 +63,7 @@ namespace Opm {
 
 #include <opm/material/densead/Evaluation.hpp>
 
+#include <tuple>
 #include <vector>
 
 namespace Opm
@@ -430,7 +431,7 @@ protected:
                                        const GroupState<Scalar>& group_state,
                                        DeferredLogger& deferred_logger);
 
-    std::optional<Scalar>
+    std::tuple<std::optional<Scalar>, bool>
     estimateOperableBhp(const Simulator& ebos_simulator,
                         const double dt,
                         WellState<Scalar>& well_state,

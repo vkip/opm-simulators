@@ -27,6 +27,7 @@
 #include <opm/input/eclipse/Schedule/Well/Well.hpp>
 #include <opm/simulators/flow/BlackoilModelParameters.hpp>
 #include <opm/simulators/wells/RuntimePerforation.hpp>
+#include <opm/simulators/wells/WellDynamicThpCalculator.hpp>
 
 #include <map>
 #include <optional>
@@ -205,7 +206,13 @@ public:
 
     void addPerforations(const std::vector<RuntimePerforation>& perfs);
 
+    void setDynamicThpCalculator(const WellDynamicThpCalculator<Scalar>& thpcalc) { this->dynamic_thp_calculator_ = thpcalc; }
+    WellDynamicThpCalculator<Scalar>& getDynamicThpCalculator() { return this->dynamic_thp_calculator_; }
+    const WellDynamicThpCalculator<Scalar>& getDynamicThpCalculator() const { return this->dynamic_thp_calculator_; }
+
 protected:
+    WellDynamicThpCalculator<Scalar> dynamic_thp_calculator_;
+
     bool getAllowCrossFlow() const;
 
     Scalar wmicrobes_() const;

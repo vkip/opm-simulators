@@ -454,6 +454,25 @@ namespace Opm {
                 well->setPrevSurfaceRates(this->wellState(), this->prevWellState());
             }
         }
+
+        // Create well network-thp calculators and update rates
+        this->updateNetworkActiveState(reportStepIdx);
+        const auto& network = this->schedule()[reportStepIdx].network();
+        if (this->networkActive()) {
+            for (auto& well : well_container_) {
+                const auto& gname = this->schedule().getWell(well->name(), reportStepIdx).groupName();
+                if (network.has_node(gname)) {
+                    well->setDynamicThpCalculator(WellDynamicThpCalculator(well->name(), this->schedule(), reportStepIdx, well->vfpProperties()->getProd()));
+                }
+            }
+            this->updateAndCommunicateGroupData(reportStepIdx,
+                                                simulator_.model().newtonMethod().numIterations(),
+                                                param_.nupcol_group_rate_tolerance_, /*update_wellgrouptarget*/ false,
+                                                local_deferredLogger);
+            updateWellDynamicThpCalculatorRates();
+        }
+
+        // calculate the well potentials
         try {
             this->updateWellPotentials(reportStepIdx,
                                        /*onlyAfterEvent*/true,
@@ -1124,7 +1143,24 @@ namespace Opm {
         }
     }
 
+    template<typename TypeTag>
+    void
+    BlackoilWellModel<TypeTag>::
+    updateWellDynamicThpCalculatorRates()
+    {
+        if (! this->networkActive()) return;
 
+        const auto report_step = simulator_.episodeIndex();
+        const auto& network = this->schedule()[report_step].network();
+        auto network_node_inflows = WellGroupHelpers<Scalar>::computeNetworkNodeInflows(network, this->wellState(), this->groupState(), this->schedule(), this->comm(), report_step);
+        for (auto& well : well_container_) {
+            const auto& gname = this->schedule().getWell(well->name(), report_step).groupName();
+            if (network.has_node(gname)) {
+                const auto& well_rates = this->wellState().well(well->indexOfWell()).surface_rates;
+                well->getDynamicThpCalculator().set_rates(network_node_inflows, well_rates);
+            }
+        }
+    }
 
 
     template<typename TypeTag>
@@ -1257,8 +1293,10 @@ namespace Opm {
         OPM_TIMEFUNCTION();
         const int iterationIdx = simulator_.model().newtonMethod().numIterations();
         const int reportStepIdx = simulator_.episodeIndex();
-        this->updateAndCommunicateGroupData(reportStepIdx, iterationIdx, 
-            param_.nupcol_group_rate_tolerance_, /*update_wellgrouptarget*/ true, local_deferredLogger);
+        this->updateAndCommunicateGroupData(reportStepIdx, iterationIdx,
+                                            param_.nupcol_group_rate_tolerance_, /*update_wellgrouptarget*/ true, local_deferredLogger);
+        updateWellDynamicThpCalculatorRates();
+
         const auto [more_inner_network_update, network_imbalance] =
                 updateNetworks(mandatory_network_balance,
                                local_deferredLogger,
@@ -1884,8 +1922,9 @@ namespace Opm {
                         }
                     }
                 }
-                this->updateAndCommunicateGroupData(episodeIdx, iterationIdx, param_.nupcol_group_rate_tolerance_,
+                this->updateAndCommunicateGroupData(episodeIdx, iterationIdx, param_.nupcol_group_rate_tolerance_, 
                                                     /*update_wellgrouptarget*/ true, deferred_logger);
+                updateWellDynamicThpCalculatorRates();
             }
             more_network_update = more_network_sub_update || well_group_thp_updated;
         }
@@ -1905,6 +1944,7 @@ namespace Opm {
                                             param_.nupcol_group_rate_tolerance_,
                                             /*update_wellgrouptarget*/ true,
                                             deferred_logger);
+        updateWellDynamicThpCalculatorRates();
 
         // updateWellStateWithTarget might throw for multisegment wells hence we
         // have a parallel try catch here to thrown on all processes.
@@ -1927,6 +1967,7 @@ namespace Opm {
                                             param_.nupcol_group_rate_tolerance_,
                                             /*update_wellgrouptarget*/ true,
                                             deferred_logger);
+        updateWellDynamicThpCalculatorRates();
     }
 
     template<typename TypeTag>
@@ -2131,6 +2172,21 @@ namespace Opm {
         // Check if there is a network with active prediction wells at this time step.
         const auto episodeIdx = simulator_.episodeIndex();
         this->updateNetworkActiveState(episodeIdx);
+        const auto& network = this->schedule()[episodeIdx].network();
+        if (this->networkActive()) {
+            for (auto& well : well_container_) {
+                const auto& gname = this->schedule().getWell(well->name(), episodeIdx).groupName();
+                if (network.has_node(gname)) {
+                    well->setDynamicThpCalculator(WellDynamicThpCalculator(well->name(), this->schedule(), episodeIdx, well->vfpProperties()->getProd()));
+                }
+            }
+            this->updateAndCommunicateGroupData(episodeIdx,
+                simulator_.model().newtonMethod().numIterations(),
+                param_.nupcol_group_rate_tolerance_,
+                /* update_wellgrouptarget*/ false,
+                deferred_logger);
+            updateWellDynamicThpCalculatorRates();
+            }
 
         // Rebalance the network initially if any wells in the network have status changes
         // (Need to check this before clearing events)

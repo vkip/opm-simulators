@@ -233,6 +233,14 @@ public:
                             const Parallel::Communication& comm,
                             const int report_time_step);
 
+    static std::map<std::string, const std::vector<Scalar>>
+    computeNetworkNodeInflows(const Network::ExtNetwork& network,
+                              const WellState<Scalar>& well_state,
+                              const GroupState<Scalar>& group_state,
+                              const Schedule& schedule,
+                              const Parallel::Communication& comm,
+                              const int report_time_step);
+
     static GuideRate::RateVector
     getWellRateVector(const WellState<Scalar>& well_state,
                       const PhaseUsage& pu,
