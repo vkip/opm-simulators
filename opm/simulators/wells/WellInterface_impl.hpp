@@ -597,7 +597,8 @@ namespace Opm
                 if (!operable_in_network) {
                     this->operability_status_.can_obtain_bhp_with_thp_limit = false;
                     this->operability_status_.obey_thp_limit_under_bhp_limit = false;
-                    return converged;
+                    //return converged;
+                    return false;
                 } else {
                     // solve well with the estimated target bhp (or limit)
                     ws.thp = this->getTHPConstraint(summary_state);
@@ -654,7 +655,8 @@ namespace Opm
                 if (!operable_in_network) {
                     this->operability_status_.can_obtain_bhp_with_thp_limit = false;
                     this->operability_status_.obey_thp_limit_under_bhp_limit = false;
-                    return converged;
+                    //return converged;
+                    return false;
                 } else {
                     ws.thp = this->getTHPConstraint(summary_state);
                     const auto msg = fmt::format("Well {} did not converge, re-solving with explicit fractions for VFP caculations.", this->name());

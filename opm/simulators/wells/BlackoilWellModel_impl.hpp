@@ -379,6 +379,7 @@ namespace Opm {
                                             simulator_.model().newtonMethod().numIterations(),
                                             param_.nupcol_group_rate_tolerance_, /*update_wellgrouptarget*/ false,
                                             local_deferredLogger);
+        updateWellDynamicThpCalculatorRates();
 
         this->wellState().updateWellsDefaultALQ(this->schedule(), reportStepIdx, this->summaryState());
         this->wellState().gliftTimeStepInit();
