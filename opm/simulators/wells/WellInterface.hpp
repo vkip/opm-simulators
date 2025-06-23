@@ -247,6 +247,7 @@ public:
                            DeferredLogger& deferred_logger) /* const */;
 
     bool updateWellControlAndStatusLocalIteration(const Simulator& simulator,
+                                                  const int current_iter,
                                                   WellState<Scalar>& well_state,
                                                   const GroupState<Scalar>& group_state,
                                                   const Well::InjectionControls& inj_controls,

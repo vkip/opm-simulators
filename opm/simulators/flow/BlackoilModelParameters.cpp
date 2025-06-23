@@ -78,6 +78,8 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     local_well_solver_control_switching_ = Parameters::Get<Parameters::LocalWellSolveControlSwitching>();
     use_implicit_ipr_ = Parameters::Get<Parameters::UseImplicitIpr>();
     check_group_constraints_inner_well_iterations_ = Parameters::Get<Parameters::CheckGroupConstraintsInnerWellIterations>();
+    check_group_constraints_inner_well_iterations_max_newton_ = Parameters::Get<Parameters::CheckGroupConstraintsInnerWellIterationsMaxNewton>();
+    check_group_constraints_inner_well_iterations_max_iter_ = Parameters::Get<Parameters::CheckGroupConstraintsInnerWellIterationsMaxIter>();
     nonlinear_solver_ = Parameters::Get<Parameters::NonlinearSolver>();
     const auto approach = Parameters::Get<Parameters::LocalSolveApproach>();
     if (approach == "jacobi") {
@@ -223,7 +225,11 @@ void BlackoilModelParameters<Scalar>::registerParameters()
     Parameters::Register<Parameters::UseImplicitIpr>
         ("Compute implict IPR for stability checks and stable solution search");
     Parameters::Register<Parameters::CheckGroupConstraintsInnerWellIterations>
-        ("Allow checking of group constraints during inner well iterations");        
+        ("Allow checking of group constraints during inner well iterations");
+    Parameters::Register<Parameters::CheckGroupConstraintsInnerWellIterationsMaxNewton>
+        ("Allow checking of group constraints during inner well iterations for this many Newton iterations");
+    Parameters::Register<Parameters::CheckGroupConstraintsInnerWellIterationsMaxIter>
+        ("Allow checking of group constraints during this many inner well iterations");
     Parameters::Register<Parameters::NetworkMaxStrictOuterIterations>
         ("Maximum outer iterations in network solver before relaxing tolerance");
     Parameters::Register<Parameters::NetworkMaxOuterIterations>

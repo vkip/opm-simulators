@@ -272,6 +272,7 @@ namespace Opm
     bool
     WellInterface<TypeTag>::
     updateWellControlAndStatusLocalIteration(const Simulator& simulator,
+                                             const int current_iter,
                                              WellState<Scalar>& well_state,
                                              const GroupState<Scalar>& group_state,
                                              const Well::InjectionControls& inj_controls,
@@ -296,6 +297,7 @@ namespace Opm
            return false;
         }
 
+        const int current_newton = simulator.model().newtonMethod().numIterations();
         const Scalar sgn = this->isInjector() ? 1.0 : -1.0;
         if (!this->wellIsStopped()){
             if (wqTotal*sgn <= 0.0 && !fixed_status){
@@ -311,10 +313,13 @@ namespace Opm
                     const bool hasGroupControl = this->isInjector() ? inj_controls.hasControl(Well::InjectorCMode::GRUP) :
                                                                       prod_controls.hasControl(Well::ProducerCMode::GRUP);
                     bool isGroupControl = ws.production_cmode == Well::ProducerCMode::GRUP || ws.injection_cmode == Well::InjectorCMode::GRUP; 
-                    if (! (isGroupControl && !this->param_.check_group_constraints_inner_well_iterations_)) {
+                    const bool check_group = this->param_.check_group_constraints_inner_well_iterations_ &&
+                                             this->param_.check_group_constraints_inner_well_iterations_max_newton_ > current_newton &&
+                                             this->param_.check_group_constraints_inner_well_iterations_max_iter_ > current_iter;
+                    if (! (isGroupControl && !check_group)) {
                         changed = this->checkIndividualConstraints(ws, summary_state, deferred_logger, inj_controls, prod_controls);
                     }
-                    if (hasGroupControl && this->param_.check_group_constraints_inner_well_iterations_) {
+                    if (hasGroupControl && check_group) {
                         changed = changed || this->checkGroupConstraints(well_state, group_state, schedule, summary_state, false, deferred_logger);
                     }
 
