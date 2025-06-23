@@ -1907,6 +1907,7 @@ namespace Opm {
                 constexpr Scalar relaxation_factor = 10.0;
                 const Scalar tolerance = relax_network_tolerance ? relaxation_factor * balance.pressure_tolerance() : balance.pressure_tolerance();
                 more_network_sub_update = this->networkActive() && network_imbalance > tolerance;
+                deferred_logger.debug(fmt::format("Inner network iteration {:03d}: imbalance = {:.5f} bar (tolerance = {:.5f} bar)", i, network_imbalance*1.0e-5, tolerance*1.0e-5));
                 if (!more_network_sub_update)
                     break;
 
@@ -1919,7 +1920,9 @@ namespace Opm {
                         const auto& ws = this->wellState().well(well->indexOfWell());
                         const bool thp_is_limit = ws.production_cmode == Well::ProducerCMode::THP;
                         if (thp_is_limit) {
+                            well->innerNetworkIteration(true);
                             well->prepareWellBeforeAssembling(this->simulator_, dt, this->wellState(), this->groupState(), deferred_logger);
+                            well->innerNetworkIteration(false);
                         }
                     }
                 }

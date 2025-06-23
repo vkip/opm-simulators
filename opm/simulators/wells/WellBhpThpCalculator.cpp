@@ -938,7 +938,8 @@ estimateStableBhp(const WellState<Scalar>& well_state,
                   const Well& well,
                   const std::vector<Scalar>& rates,
                   const Scalar rho,
-                  const SummaryState& summaryState) const
+                  const SummaryState& summaryState,
+                  DeferredLogger& deferred_logger) const
 {   
     // Given a *converged* well_state with ipr, estimate bhp of the stable solution 
     const auto& controls = well.productionControls(summaryState);
@@ -970,7 +971,7 @@ estimateStableBhp(const WellState<Scalar>& well_state,
     const auto retval = VFPHelpers<double>::intersectWithIPR(table, thp, wfr, gfr,
                                                              well_.getALQ(well_state),
                                                              ipr.first, ipr.second,
-                                                             bhp_adjusted);
+                                                             bhp_adjusted, deferred_logger);
     if (retval.has_value()) {
         // returned pair is (flo, bhp)
         return retval.value().second;

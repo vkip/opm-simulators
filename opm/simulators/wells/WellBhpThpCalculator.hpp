@@ -111,7 +111,7 @@ public:
                     const Well& well,
                     const std::vector<Scalar>& rates,
                     const Scalar rho,
-                    const SummaryState& summaryState) const;    
+                    const SummaryState& summaryState, DeferredLogger& deferred_logger) const;
 
   std::pair<Scalar, Scalar>
   getFloIPR(const WellState<Scalar>& well_state,

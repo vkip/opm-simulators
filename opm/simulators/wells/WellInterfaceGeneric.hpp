@@ -210,6 +210,9 @@ public:
     WellDynamicThpCalculator<Scalar>& getDynamicThpCalculator() { return this->dynamic_thp_calculator_; }
     const WellDynamicThpCalculator<Scalar>& getDynamicThpCalculator() const { return this->dynamic_thp_calculator_; }
 
+    bool innerNetworkIteration() const { return this->inner_network_iteration_; }
+    void innerNetworkIteration(bool flag) { this->inner_network_iteration_ = flag; }
+
 protected:
     WellDynamicThpCalculator<Scalar> dynamic_thp_calculator_;
 
@@ -221,6 +224,8 @@ protected:
     Scalar wpolymer_() const;
     Scalar wsalt_() const;
     Scalar wurea_() const;
+
+    bool inner_network_iteration_ {false};
 
     int polymerTable_() const;
     int polymerInjTable_() const;

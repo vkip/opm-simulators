@@ -29,9 +29,13 @@
 #include <opm/input/eclipse/Schedule/VFPInjTable.hpp>
 #include <opm/input/eclipse/Schedule/VFPProdTable.hpp>
 
+#include <opm/simulators/utils/DeferredLoggingErrorHelpers.hpp>
+
 #include <cassert>
 #include <cmath>
 #include <stdexcept>
+
+#include <fmt/format.h>
 
 namespace {
 
@@ -552,7 +556,8 @@ intersectWithIPR(const VFPProdTable& table,
                  const Scalar alq,
                  const Scalar ipr_a,
                  const Scalar ipr_b,
-                 const std::function<Scalar(const Scalar)>& adjust_bhp)
+                 const std::function<Scalar(const Scalar)>& adjust_bhp,
+                 DeferredLogger& deferred_logger)
 {
     // Given fixed thp, wfr, gfr and alq, this function finds a stable (-flo, bhp)-intersection
     // between the ipr-line and bhp(flo) from table, if such an intersection exists. For multiple 
@@ -596,6 +601,7 @@ intersectWithIPR(const VFPProdTable& table,
             Scalar w = -y0/(y1-y0);
             w = std::clamp(w, Scalar{0.0}, Scalar{1.0}); // just to be safe (if y0~y1~0)
             flo_x = flo0 + w*(flo1 - flo0);
+            deferred_logger.debug(fmt::format("   |X| Found candidate stable bhp = {:.2f} bar in flo interval # {}", -(flo_x - ipr_a)/ipr_b*1.0e-5, i), /*level*/ 3);
         }
         if (i < flos.size()-1) { // check next interval
             flo0 = flo1;
@@ -607,6 +613,7 @@ intersectWithIPR(const VFPProdTable& table,
             // trust it (avoid vfp-extrapolation whenever possible)
             Scalar w = -y0/(y1-y0); // w > 1.0
             flo_x = flo0 + w*(flo1 - flo0);
+            deferred_logger.debug(fmt::format("   |X| Found candidate stable bhp = {:.2f} bar (by extrapolating above largest flo value)", -(flo_x - ipr_a)/ipr_b*1.0e-5), /*level*/ 3);
         }
     }
     // return (last) intersection if found (negative flo)
