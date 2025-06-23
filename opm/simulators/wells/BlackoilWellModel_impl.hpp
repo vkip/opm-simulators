@@ -1919,7 +1919,7 @@ namespace Opm {
                     if (it != this->node_pressures_.end()) {
                         const auto& ws = this->wellState().well(well->indexOfWell());
                         const bool thp_is_limit = ws.production_cmode == Well::ProducerCMode::THP;
-                        if (thp_is_limit) {
+                        if (i > 0 && thp_is_limit) { // Use full well solves for the first iteration
                             well->innerNetworkIteration(true);
                             well->prepareWellBeforeAssembling(this->simulator_, dt, this->wellState(), this->groupState(), deferred_logger);
                             well->innerNetworkIteration(false);
