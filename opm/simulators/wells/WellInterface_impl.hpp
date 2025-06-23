@@ -708,10 +708,10 @@ namespace Opm
             const Scalar bhp_limit = WellBhpThpCalculator(*this).mostStrictBhpFromBhpLimits(summary_state);
             const bool converged = solveWellWithBhp(simulator, dt, bhp_limit, well_state, deferred_logger);
             if (!converged || this->wellIsStopped()) {
-                return std::nullopt;
+                return {std::nullopt, true};
             }
 
-            return bhp_limit;
+            return {bhp_limit, true};
         }
         OPM_TIMEFUNCTION();
         // Given an unconverged well or closed well, estimate an operable bhp (if any)
