@@ -733,10 +733,11 @@ namespace Opm
         std::vector<Scalar> ipr_rates(3, 0.0);
 
         const bool check_network = (this->getDynamicThpLimit() && this->getDynamicThpCalculator().initialized() && this->innerNetworkIteration());
-        if (true && check_network && !zero_ipr) {
+        if (false && check_network && !zero_ipr) {
             // Find bhp_max as the bhp where we get reverse flow from at least one phase
             Scalar bhp_max = prod_controls.bhp_limit - 1.0;
             for (auto i=0*ipr_a.size(); i<ipr_a.size(); ++i) bhp_max = std::max(bhp_max, ipr_a[i]/ipr_b[i]);
+            bhp_max = std::min(bhp_max, 1000*unit::barsa); // TEMP HACK
             Scalar thp_min = this->getTHPConstraint(summary_state);
             Scalar bhp = prod_controls.bhp_limit;
 
