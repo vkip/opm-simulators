@@ -132,6 +132,7 @@ struct CheckGroupConstraintsInnerWellIterations { static constexpr bool value = 
 struct NetworkMaxStrictOuterIterations { static constexpr int value = 10; };
 struct NetworkMaxOuterIterations { static constexpr int value = 10; };
 struct NetworkMaxSubIterations { static constexpr int value = 20; };
+struct NetworkMinFullWellSolveIterations { static constexpr int value = 1000000; };
 template<class Scalar>
 struct NetworkPressureUpdateDampingFactor { static constexpr Scalar value = 0.1; };
 template<class Scalar>
@@ -311,6 +312,9 @@ public:
 
     /// Maximum number of sub-iterations to update network pressures (within a single well/group control update)
     int network_max_sub_iterations_;
+
+    /// Minimum number of (sub) iterations to use full well solves
+    int network_min_full_well_solve_iterations_;
 
     /// Damping factor in the inner network pressure update iterations
     Scalar network_pressure_update_damping_factor_;
