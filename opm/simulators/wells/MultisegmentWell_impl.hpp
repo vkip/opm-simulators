@@ -1657,7 +1657,7 @@ namespace Opm
             ++its_since_last_switch;
             if (allow_switching && its_since_last_switch >= min_its_after_switch && status_switch_count < max_status_switch){
                 const Scalar wqTotal = this->primary_variables_.getWQTotal().value();
-                bool changed = this->updateWellControlAndStatusLocalIteration(simulator, well_state, group_state,
+                bool changed = this->updateWellControlAndStatusLocalIteration(simulator, it, well_state, group_state,
                                                                               inj_controls, prod_controls, wqTotal,
                                                                               deferred_logger, fixed_control,
                                                                               fixed_status);
