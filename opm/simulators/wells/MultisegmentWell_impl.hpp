@@ -1664,7 +1664,7 @@ namespace Opm
                 if (changed) {
                     its_since_last_switch = 0;
                     ++switch_count;
-                    if (well_status_cur != this->wellStatus_) {
+                    if (well_status_cur != this->wellStatus_ && !fixed_control && this->wellStatus_ != WellStatus::OPEN) {
                         well_status_cur = this->wellStatus_;
                         status_switch_count++;
                     }
@@ -1676,7 +1676,13 @@ namespace Opm
                 }
             }
             if (status_switch_count == max_status_switch) {
-                this->stopWell();
+                if (!this->regularize_) {
+                    status_switch_count = 0;
+                    relax_convergence = true;
+                    this->regularize_ = true;
+                } else {
+                    this->stopWell();
+                }
             }
 
             if (it > this->param_.strict_inner_iter_wells_) {
