@@ -113,7 +113,7 @@ update(const WellState<Scalar>& well_state,
         }
 
         // todo to map old fraction to new perforations for now start from scratch.
-        if (ws.primaryvar.size() == value_.size() * numWellEq) {
+        if (ws.primaryvar.size() == value_.size() * numWellEq) { // NB! Never end up here after updaterWellStateWithTarget (--> ws.primarvar.size() == 0)
             if (has_wfrac_variable) {
                 value_[seg][WFrac] = ws.primaryvar[seg * numWellEq + WFrac];
             }

@@ -179,29 +179,30 @@ activeProductionConstraint(const SingleWellState<Scalar>& ws,
     const PhaseUsage& pu = well_.phaseUsage();
     const auto controls = prod_controls.has_value() ? prod_controls.value() : well_.wellEcl().productionControls(summaryState);
     const auto currentControl = ws.production_cmode;
+    constexpr Scalar violation_factor = 1.0 + 1.0e-4;
 
     if (controls.hasControl(Well::ProducerCMode::BHP) && currentControl != Well::ProducerCMode::BHP) {
         const Scalar bhp_limit = controls.bhp_limit;
         Scalar current_bhp = ws.bhp;
-        if (bhp_limit > current_bhp)
+        if (bhp_limit > (current_bhp * violation_factor))
             return Well::ProducerCMode::BHP;
     }
 
     if (controls.hasControl(Well::ProducerCMode::ORAT) && currentControl != Well::ProducerCMode::ORAT) {
         Scalar current_rate = -ws.surface_rates[pu.phase_pos[BlackoilPhases::Liquid]];
-        if (controls.oil_rate < current_rate)
+        if ((controls.oil_rate * violation_factor) < current_rate)
             return Well::ProducerCMode::ORAT;
     }
 
     if (controls.hasControl(Well::ProducerCMode::WRAT) && currentControl != Well::ProducerCMode::WRAT) {
         Scalar current_rate = -ws.surface_rates[pu.phase_pos[BlackoilPhases::Aqua]];
-        if (controls.water_rate < current_rate)
+        if ((controls.water_rate * violation_factor) < current_rate)
             return Well::ProducerCMode::WRAT;
     }
 
     if (controls.hasControl(Well::ProducerCMode::GRAT) && currentControl != Well::ProducerCMode::GRAT) {
         Scalar current_rate = -ws.surface_rates[pu.phase_pos[BlackoilPhases::Vapour]];
-        if (controls.gas_rate < current_rate)
+        if ((controls.gas_rate * violation_factor) < current_rate)
             return Well::ProducerCMode::GRAT;
     }
 
@@ -217,7 +218,7 @@ activeProductionConstraint(const SingleWellState<Scalar>& ws,
                 deferred_logger.debug("LRAT_ORAT_WELL", "Well " + well_.name() + " The LRAT target is equal the ORAT target and the water rate is zero, skip checking LRAT");
             }
         }
-        if (!skip && controls.liquid_rate < current_rate)
+        if (!skip && (controls.liquid_rate * violation_factor) < current_rate)
             return Well::ProducerCMode::LRAT;
     }
 
@@ -232,7 +233,7 @@ activeProductionConstraint(const SingleWellState<Scalar>& ws,
         if (pu.phase_used[BlackoilPhases::Vapour])
             current_rate -= ws.reservoir_rates[pu.phase_pos[BlackoilPhases::Vapour]];
 
-        if (controls.prediction_mode && controls.resv_rate < current_rate)
+        if (controls.prediction_mode && (controls.resv_rate  * violation_factor) < current_rate)
             return Well::ProducerCMode::RESV;
 
         if (!controls.prediction_mode) {
@@ -254,7 +255,7 @@ activeProductionConstraint(const SingleWellState<Scalar>& ws,
             for (int p = 0; p < np; ++p)
                 resv_rate += voidage_rates[p];
 
-            if (resv_rate < current_rate)
+            if ((resv_rate * violation_factor) < current_rate)
                 return Well::ProducerCMode::RESV;
         }
     }
@@ -264,7 +265,7 @@ activeProductionConstraint(const SingleWellState<Scalar>& ws,
         Scalar current_thp = ws.thp;
         // For trivial group targets (for instance caused by NETV) we dont want to flip to THP control.
         const bool dont_check = (currentControl == Well::ProducerCMode::GRUP && ws.trivial_group_target);
-        if (thp > current_thp && !dont_check) {
+        if (thp > (current_thp * violation_factor) && !dont_check) {
             // If WVFPEXP item 4 is set to YES1 or YES2
             // switching to THP is prevented if the well will
             // produce at a higher rate with THP control

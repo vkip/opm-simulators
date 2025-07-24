@@ -229,14 +229,63 @@ namespace Opm
             return false;
         }
         bool changed = false;
-        if (iog == IndividualOrGroup::Individual) {
+        const auto orig_prod_cmode = ws.production_cmode;
+        const auto orig_inj_cmode = ws.injection_cmode;
+        const Scalar rate_sign = this->isInjector() ? 1.0 : -1.0;
+        const auto& summary_state = simulator.vanguard().summaryState();
+        if (iog == IndividualOrGroup::Individual || iog == IndividualOrGroup::Both) {
             changed = this->checkIndividualConstraints(ws, summaryState, deferred_logger);
-        } else if (iog == IndividualOrGroup::Group) {
-            changed = this->checkGroupConstraints(well_state, group_state, schedule, summaryState, true, deferred_logger);
-        } else {
-            assert(iog == IndividualOrGroup::Both);
-            changed = this->checkConstraints(well_state, group_state, schedule, summaryState, deferred_logger);
+
+            // Iterate to try to find the strictest individual control
+            if (changed) {
+                constexpr int max_ctrl_iter = 10;
+                int ctrl_iter = 0;
+                while (ctrl_iter < max_ctrl_iter) {
+                    const bool thp_controlled = this->isInjector() ? ws.injection_cmode == Well::InjectorCMode::THP :
+                                                                    ws.production_cmode == Well::ProducerCMode::THP;
+                    if (thp_controlled) {
+                        ws.thp = this->getTHPConstraint(summary_state);
+                        deferred_logger.debug(fmt::format("Well {}: Updating well state with THP target {:.2f} bar", 
+                                    this->name(), ws.thp/unit::barsa),
+                        /*debug_verbosity_level*/ 9);
+
+                        const Scalar total_rate = rate_sign * std::accumulate(ws.surface_rates.begin(), ws.surface_rates.end(), 0.0);
+                        if (total_rate <= 0.0) {
+                            for (int p = 0; p < this->number_of_phases_; ++p) {
+                                ws.surface_rates[p] = rate_sign * ws.well_potentials[p];
+                            }
+                        }
+                    } else {
+                        // don't call for thp since this might trigger additional local solve
+                        updateWellStateWithTarget(simulator, group_state, well_state, deferred_logger, /*discard_pv*/ false);
+                    }
+
+                    if (!this->checkIndividualConstraints(ws, summary_state, deferred_logger)) {
+                        break;
+                    }
+                    ++ctrl_iter;
+                }
+            }
         }
+
+        if (iog == IndividualOrGroup::Group || (!changed && iog == IndividualOrGroup::Both)) {
+            changed = this->checkGroupConstraints(well_state, group_state, schedule, summaryState, true, deferred_logger);
+            if (changed) {
+                // No reason to go forward with group constraints that violate individual constraints...
+                updateWellStateWithTarget(simulator, group_state, well_state, deferred_logger, /*discard_pv*/ false);
+                this->checkIndividualConstraints(ws, summaryState, deferred_logger);
+            }
+        }
+        // } else {
+        //     assert(iog == IndividualOrGroup::Both);
+        //     changed = this->checkConstraints(well_state, group_state, schedule, summaryState, deferred_logger);
+        // }
+
+        const bool actually_changed = this->isProducer() ?
+                                ws.production_cmode != orig_prod_cmode :
+                                ws.injection_cmode != orig_inj_cmode;
+        if (!actually_changed) changed = false;
+
         Parallel::Communication cc = simulator.vanguard().grid().comm();
         // checking whether control changed
         if (changed) {
@@ -261,7 +310,26 @@ namespace Opm
             if (iterationIdx >= nupcol || this->well_control_log_.empty()) {
                 this->well_control_log_.push_back(from);
             }
-            updateWellStateWithTarget(simulator, group_state, well_state, deferred_logger);
+            const bool thp_controlled = this->isInjector() ? ws.injection_cmode == Well::InjectorCMode::THP :
+                                            ws.production_cmode == Well::ProducerCMode::THP;
+            if (thp_controlled) {
+                ws.thp = this->getTHPConstraint(summary_state);
+                deferred_logger.debug(fmt::format("Well {}: Updating well state with THP target {:.2f} bar", 
+                                                    this->name(), ws.thp/unit::barsa),
+                                        /*debug_verbosity_level*/ 9);
+                const Scalar total_rate = rate_sign * std::accumulate(ws.surface_rates.begin(), ws.surface_rates.end(), 0.0);
+                if (total_rate <= 0.0) {
+                    for (int p = 0; p < this->number_of_phases_; ++p) {
+                        ws.surface_rates[p] = rate_sign * ws.well_potentials[p];
+                    }
+                }
+                ws.primaryvar.resize(0);
+            } else {
+                // don't call for thp since this might trigger additional local solve
+                updateWellStateWithTarget(simulator, group_state, well_state, deferred_logger, /*discard_pv*/ true);
+            }
+
+            //updateWellStateWithTarget(simulator, group_state, well_state, deferred_logger);
             updatePrimaryVariables(simulator, well_state, deferred_logger);
         }
 
@@ -283,6 +351,8 @@ namespace Opm
                                              const bool fixed_status)
     {
         OPM_TIMEFUNCTION();
+        constexpr bool allow_network_thp_to_grup_switch = true;
+
         const auto& summary_state = simulator.vanguard().summaryState();
         const auto& schedule = simulator.vanguard().schedule();
         auto& ws = well_state.well(this->index_of_well_);
@@ -305,35 +375,105 @@ namespace Opm
             } else {
                 bool changed = false;
                 if (!fixed_control) {
-                    // Changing to group controls here may lead to inconsistencies in the group handling which in turn 
+                    // Changing to group controls here may lead to inconsistencies in the group handling which in turn
                     // may result in excessive back and forth switching. However, we currently allow this by default.
                     // The switch check_group_constraints_inner_well_iterations_ is a temporary solution.
-                    
+                    const Scalar rate_sign = this->isInjector() ? 1.0 : -1.0;
                     const bool hasGroupControl = this->isInjector() ? inj_controls.hasControl(Well::InjectorCMode::GRUP) :
-                                                                      prod_controls.hasControl(Well::ProducerCMode::GRUP);
-                    bool isGroupControl = ws.production_cmode == Well::ProducerCMode::GRUP || ws.injection_cmode == Well::InjectorCMode::GRUP; 
+                                                                        prod_controls.hasControl(Well::ProducerCMode::GRUP);
+                    bool toGroupControl = false;
+                    const auto orig_prod_cmode = ws.production_cmode;
+                    const auto orig_inj_cmode = ws.injection_cmode;
+                    bool isGroupControl = ws.production_cmode == Well::ProducerCMode::GRUP || ws.injection_cmode == Well::InjectorCMode::GRUP;
                     if (! (isGroupControl && !this->param_.check_group_constraints_inner_well_iterations_)) {
                         changed = this->checkIndividualConstraints(ws, summary_state, deferred_logger, inj_controls, prod_controls);
                     }
+                    // Iterate to try to find the strictest individual control
+                    if (changed) {
+                        constexpr int max_ctrl_iter = 10;
+                        int ctrl_iter = 0;
+                        while (ctrl_iter < max_ctrl_iter) {
+                            const bool thp_controlled = this->isInjector() ? ws.injection_cmode == Well::InjectorCMode::THP :
+                                                                            ws.production_cmode == Well::ProducerCMode::THP;
+                            if (thp_controlled) {
+                                ws.thp = this->getTHPConstraint(summary_state);
+                                deferred_logger.debug(fmt::format("Well {}: Updating well state with THP target {:.2f} bar", 
+                                                                    this->name(), ws.thp/unit::barsa),
+                                                        /*debug_verbosity_level*/ 9);
+
+                                const Scalar total_rate = rate_sign * std::accumulate(ws.surface_rates.begin(), ws.surface_rates.end(), 0.0);
+                                if (total_rate <= 0.0) {
+                                    for (int p = 0; p < this->number_of_phases_; ++p) {
+                                        ws.surface_rates[p] = rate_sign * ws.well_potentials[p];
+                                    }
+                                }
+                            } else {
+                                // don't call for thp since this might trigger additional local solve
+                                updateWellStateWithTarget(simulator, group_state, well_state, deferred_logger, /*discard_pv*/ false);
+                            }
+
+                            if (!this->checkIndividualConstraints(ws, summary_state, deferred_logger, inj_controls, prod_controls)) {
+                                break;
+                            }
+                            ++ctrl_iter;
+                        }
+                    }
+
                     // Disallow THP->GROUP local change for network wells under THP control
                     const bool networkThpControlled = this->isProducer()
                                                     && this->getDynamicThpLimit()
                                                     && ws.production_cmode == Well::ProducerCMode::THP;
 
-                    if (hasGroupControl && this->param_.check_group_constraints_inner_well_iterations_ && !networkThpControlled) {
+                    if (hasGroupControl && this->param_.check_group_constraints_inner_well_iterations_ && (allow_network_thp_to_grup_switch || !networkThpControlled)) {
                         changed = changed || this->checkGroupConstraints(well_state, group_state, schedule, summary_state, false, deferred_logger);
+                        toGroupControl = true;
                     }
 
                     if (changed) {
                         const bool thp_controlled = this->isInjector() ? ws.injection_cmode == Well::InjectorCMode::THP :
                                                                         ws.production_cmode == Well::ProducerCMode::THP;
-                        if (thp_controlled){
-                             ws.thp = this->getTHPConstraint(summary_state);
+                        if (thp_controlled) {
+                            ws.thp = this->getTHPConstraint(summary_state);
+                            deferred_logger.debug(fmt::format("Well {}: Updating well state with THP target {:.2f} bar", 
+                                                                this->name(), ws.thp/unit::barsa),
+                                                    /*debug_verbosity_level*/ 9);
+                            const Scalar total_rate = rate_sign * std::accumulate(ws.surface_rates.begin(), ws.surface_rates.end(), 0.0);
+                            if (total_rate <= 0.0) {
+                                for (int p = 0; p < this->number_of_phases_; ++p) {
+                                    ws.surface_rates[p] = rate_sign * ws.well_potentials[p];
+                                }
+                            }
                         } else {
                             // don't call for thp since this might trigger additional local solve
-                            updateWellStateWithTarget(simulator, group_state, well_state, deferred_logger);
+                            updateWellStateWithTarget(simulator, group_state, well_state, deferred_logger, /*discard_pv*/ false);
+                            // Make sure group target does not violate individual rate target, since this will cause local control oscillations
+                            if (toGroupControl) this->checkIndividualConstraints(ws, summary_state, deferred_logger, inj_controls, prod_controls);
                         }
-                        updatePrimaryVariables(simulator, well_state, deferred_logger);
+                        const bool actually_changed = this->isProducer() ?
+                                                        ws.production_cmode != orig_prod_cmode :
+                                                        ws.injection_cmode != orig_inj_cmode;
+                        if (actually_changed) {
+                            const bool thp_controlled2 = this->isInjector() ? ws.injection_cmode == Well::InjectorCMode::THP :
+                                                ws.production_cmode == Well::ProducerCMode::THP;
+                            if (thp_controlled2) {
+                                ws.thp = this->getTHPConstraint(summary_state);
+                                deferred_logger.debug(fmt::format("Well {}: Updating well state with THP target {:.2f} bar", 
+                                                                    this->name(), ws.thp/unit::barsa),
+                                                        /*debug_verbosity_level*/ 9);
+                                const Scalar total_rate = rate_sign * std::accumulate(ws.surface_rates.begin(), ws.surface_rates.end(), 0.0);
+                                if (total_rate <= 0.0) {
+                                    for (int p = 0; p < this->number_of_phases_; ++p) {
+                                        ws.surface_rates[p] = rate_sign * ws.well_potentials[p];
+                                    }
+                                }
+                                ws.primaryvar.resize(0);
+                            } else {
+                                updateWellStateWithTarget(simulator, group_state, well_state, deferred_logger, /*discard_pv*/ true);
+                            }
+                            updatePrimaryVariables(simulator, well_state, deferred_logger);
+                        } else {
+                            changed = false;
+                        }
                     }
                 }
                 return changed;
@@ -435,7 +575,7 @@ namespace Opm
         // We test the well as an open well during the well testing
         ws.open();
 
-        updateWellStateWithTarget(simulator, group_state, well_state_copy, deferred_logger);
+        updateWellStateWithTarget(simulator, group_state, well_state_copy, deferred_logger, /*discard_pv*/ true);
         calculateExplicitQuantities(simulator, well_state_copy, deferred_logger);
         updatePrimaryVariables(simulator, well_state_copy, deferred_logger);
 
@@ -1195,7 +1335,8 @@ namespace Opm
     updateWellStateWithTarget(const Simulator& simulator,
                               const GroupState<Scalar>& group_state,
                               WellState<Scalar>& well_state,
-                              DeferredLogger& deferred_logger) const
+                              DeferredLogger& deferred_logger, 
+                              bool discard_pv) const
     {
         OPM_TIMEFUNCTION();
         // only bhp and wellRates are used to initilize the primaryvariables for standard wells
@@ -1209,7 +1350,7 @@ namespace Opm
 
         // Discard old primary variables, the new well state
         // may not be anywhere near the old one.
-        ws.primaryvar.resize(0);
+        if (discard_pv) ws.primaryvar.resize(0);
 
         if (this->wellIsStopped()) {
             for (int p = 0; p<np; ++p) {
@@ -1350,6 +1491,13 @@ namespace Opm
         {
             const auto current = ws.production_cmode;
             const auto& controls = well.productionControls(summaryState);
+            auto debug_print = [current, this, &deferred_logger](const std::string& ratename, Scalar rate, std::vector<Scalar>& wsrates) {
+                deferred_logger.debug(fmt::format("Well {}: {} target --> ({:.2e}, {:.2e}, {:.2e}) from current {} = {:.2e}",
+                                                    this->name(), WellProducerCMode2String(current),
+                                                    wsrates[0]*unit::day, wsrates[1]*unit::day, wsrates[2]*unit::day,
+                                                    ratename, rate), /*debug_verbosity_level*/ 9);
+                };
+
             switch (current) {
             case Well::ProducerCMode::ORAT:
             {
@@ -1369,6 +1517,7 @@ namespace Opm
                         }
                     }
                 }
+                debug_print("ORAT", current_rate*unit::day, ws.surface_rates);
                 break;
             }
             case Well::ProducerCMode::WRAT:
@@ -1389,6 +1538,7 @@ namespace Opm
                         }
                     }
                 }
+                debug_print("WRAT", current_rate*unit::day, ws.surface_rates);
                 break;
             }
             case Well::ProducerCMode::GRAT:
@@ -1409,7 +1559,7 @@ namespace Opm
                         }
                     }
                 }
-
+                debug_print("GRAT", current_rate*unit::day, ws.surface_rates);
                 break;
 
             }
@@ -1432,6 +1582,7 @@ namespace Opm
                         }
                     }
                 }
+                debug_print("LRAT", current_rate*unit::day, ws.surface_rates);
                 break;
             }
             case Well::ProducerCMode::CRAT:
@@ -1488,6 +1639,7 @@ namespace Opm
                         }
                     }
                 }
+                debug_print("RESV", total_res_rate, ws.surface_rates);
                 break;
             }
             case Well::ProducerCMode::BHP:
@@ -1505,6 +1657,7 @@ namespace Opm
                         ws.surface_rates[p] = -ws.well_potentials[p];
                     }
                 }
+                debug_print("BHP", ws.bhp/unit::barsa, ws.surface_rates);
                 break;
             }
             case Well::ProducerCMode::THP:
@@ -1531,6 +1684,7 @@ namespace Opm
                         }
                     }
                 }
+                debug_print("THP", ws.thp/unit::barsa, ws.surface_rates);
                 break;
             }
             case Well::ProducerCMode::GRUP:
@@ -1558,6 +1712,7 @@ namespace Opm
                     // this information in the well state and explicitly check for this condition when evaluating well controls.
                     ws.trivial_group_target = true;
                 }
+                debug_print("SCALE[GRUP]", scale, ws.surface_rates);
                 break;
             }
             case Well::ProducerCMode::CMODE_UNDEFINED:

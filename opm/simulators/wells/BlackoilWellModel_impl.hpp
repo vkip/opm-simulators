@@ -2137,6 +2137,18 @@ namespace Opm {
         const bool do_prestep_network_rebalance = param_.pre_solve_network_ && this->needPreStepNetworkRebalance(episodeIdx);
 
         for (const auto& well : well_container_) {
+            // Don't re-open wells that have been shut because of convergence issues
+            const auto& well_name = well->name();
+            const bool closed_this_step = (this->wellTestState().well_is_closed(well_name) &&
+                                            this->wellTestState().lastTestTime(well_name) == simulator_.time());
+            if (closed_this_step) {
+                this->closed_this_step_.insert(well_name);
+                this->wellState().shutWell(well->indexOfWell());
+                this->well_open_times_.erase(well_name);
+                this->well_close_times_.erase(well_name);
+                continue;
+            }
+
             auto& events = this->wellState().well(well->indexOfWell()).events;
             if (events.hasEvent(WellState<Scalar>::event_mask)) {
                 well->updateWellStateWithTarget(simulator_, this->groupState(), this->wellState(), deferred_logger);

@@ -1513,6 +1513,8 @@ updateAndCommunicateGroupData(const int reportStepIdx,
             }
             auto& ws_update = this->wellState().well(well->indexOfWell());
             ws_update.group_target = group_target;
+            deferred_logger.debug(fmt::format("Well {} (group {}): Setting group target to {:.2e} [vol/day]", well->name(), group.name(), group_target*unit::day),
+                                    /*debug_verbosity_level*/ 8);
         }
     }
 }
