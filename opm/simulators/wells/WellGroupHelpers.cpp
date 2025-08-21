@@ -136,16 +136,20 @@ namespace Opm {
             const Scalar factor = wellEcl.getEfficiencyFactor(network) * wellState[wellEcl.name()].efficiency_scaling_factor;
             if (res_rates) {
                 const auto& well_rates = ws.reservoir_rates;
+                auto rate_value = well_rates[phasePos];
+                if (!std::isfinite(rate_value) || std::abs(rate_value) > 1.0e15) { rate_value = 0.0; }
                 if (injector)
-                    rate += factor * well_rates[phasePos];
+                    rate += factor * rate_value; //well_rates[phasePos];
                 else
-                    rate -= factor * well_rates[phasePos];
+                    rate -= factor * rate_value; //well_rates[phasePos];
             } else {
                 const auto& well_rates = ws.surface_rates;
+                auto rate_value = well_rates[phasePos];
+                if (!std::isfinite(rate_value) || std::abs(rate_value) > 1.0e15) { rate_value = 0.0; }
                 if (injector)
-                    rate += factor * well_rates[phasePos];
+                    rate += factor * rate_value; //well_rates[phasePos];
                 else
-                    rate -= factor * well_rates[phasePos];
+                    rate -= factor * rate_value; //well_rates[phasePos];
             }
         }
         return rate;
