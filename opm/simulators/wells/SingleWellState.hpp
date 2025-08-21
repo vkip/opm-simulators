@@ -143,6 +143,17 @@ public:
     void stop();
     void open();
 
+    void checkAndLimitRates() {
+      auto chkFunc = [](std::vector<Scalar>& rates) {
+        for (std::size_t i=0; i<rates.size(); ++i) {
+          const auto rate = rates[i];
+          if (!std::isfinite(rate) || std::abs(rate)>1.0e15) { rates[i] = 0.0;}
+        }
+      };
+      chkFunc(this->surface_rates);
+      chkFunc(this->reservoir_rates);
+      chkFunc(this->prev_surface_rates);
+    }
     // The sum_xxx_rates() functions sum over all connection rates of pertinent
     // types. In the case of distributed wells this involves an MPI
     // communication.

@@ -1309,6 +1309,7 @@ updateAndCommunicateGroupData(const int reportStepIdx,
         this->groupState().update_gconsump(schedule(), reportStepIdx, this->summaryState_);
     }
 
+    this->wellState().checkAndLimitRates();
     // This builds some necessary lookup structures, so it must be called
     // before we copy to well_state_nupcol_.
     this->wellState().updateGlobalIsGrup(comm_);

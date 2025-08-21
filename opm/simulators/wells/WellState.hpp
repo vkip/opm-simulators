@@ -137,6 +137,13 @@ public:
         return this->well_rates.find(wellName) != this->well_rates.end();
     }
 
+    void checkAndLimitRates()
+    {
+        for (size_t i = 0; i < this->size(); ++i) {
+            this->wells_[i].checkAndLimitRates();
+        }
+    }
+
     void clearWellRates()
     {
         this->well_rates.clear();
