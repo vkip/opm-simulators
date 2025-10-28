@@ -191,32 +191,57 @@ activeProductionConstraint(const SingleWellState<Scalar, IndexTraits>& ws,
     const auto controls = prod_controls.has_value() ? prod_controls.value() : well_.wellEcl().productionControls(summaryState);
     const auto currentControl = ws.production_cmode;
 
+    auto newControl = currentControl;
+    constexpr Scalar rateScale = 1.0/unit::day; // m3/day
+    constexpr Scalar presScale = unit::barsa;   // bar
+    Scalar maxOffense = -1.0;
+
     if (controls.hasControl(Well::ProducerCMode::BHP) && currentControl != Well::ProducerCMode::BHP) {
         const Scalar bhp_limit = controls.bhp_limit;
         Scalar current_bhp = ws.bhp;
-        if (bhp_limit > current_bhp)
-            return Well::ProducerCMode::BHP;
+        if (bhp_limit > current_bhp) {
+            const Scalar offense = std::abs(bhp_limit - current_bhp)/presScale;
+            if (offense > maxOffense) {
+                newControl = Well::ProducerCMode::BHP;
+                maxOffense = offense;
+            }
+        }
     }
 
     if (controls.hasControl(Well::ProducerCMode::ORAT) && currentControl != Well::ProducerCMode::ORAT) {
         const int oil_pos = pu.canonicalToActivePhaseIdx(IndexTraits::oilPhaseIdx);
         Scalar current_rate = -ws.surface_rates[oil_pos];
-        if (controls.oil_rate < current_rate)
-            return Well::ProducerCMode::ORAT;
+        if (controls.oil_rate < current_rate) {
+            const Scalar offense = std::abs(controls.oil_rate - current_rate)/rateScale;
+            if (offense > maxOffense) {
+                newControl = Well::ProducerCMode::ORAT;
+                maxOffense = offense;
+            }
+        }
     }
 
     if (controls.hasControl(Well::ProducerCMode::WRAT) && currentControl != Well::ProducerCMode::WRAT) {
         const int water_pos = pu.canonicalToActivePhaseIdx(IndexTraits::waterPhaseIdx);
         Scalar current_rate = -ws.surface_rates[water_pos];
-        if (controls.water_rate < current_rate)
-            return Well::ProducerCMode::WRAT;
+        if (controls.water_rate < current_rate) {
+            const Scalar offense = std::abs(controls.water_rate - current_rate)/rateScale;
+            if (offense > maxOffense) {
+                newControl = Well::ProducerCMode::WRAT;
+                maxOffense = offense;
+            }
+        }
     }
 
     if (controls.hasControl(Well::ProducerCMode::GRAT) && currentControl != Well::ProducerCMode::GRAT) {
         const int gas_pos = pu.canonicalToActivePhaseIdx(IndexTraits::gasPhaseIdx);
         Scalar current_rate = -ws.surface_rates[gas_pos];
-        if (controls.gas_rate < current_rate)
-            return Well::ProducerCMode::GRAT;
+        if (controls.gas_rate < current_rate) {
+            const Scalar offense = std::abs(controls.gas_rate - current_rate)/rateScale/1000.0;
+            if (offense > maxOffense) {
+                newControl = Well::ProducerCMode::GRAT;
+                maxOffense = offense;
+            }
+        }
     }
 
     if (controls.hasControl(Well::ProducerCMode::LRAT) && currentControl != Well::ProducerCMode::LRAT) {
@@ -231,8 +256,8 @@ activeProductionConstraint(const SingleWellState<Scalar, IndexTraits>& ws,
         }
 
         bool skip = false;
-        if (controls.liquid_rate == controls.oil_rate && pu.phaseIsActive(IndexTraits::waterPhaseIdx)) {
-            const int water_pos = pu.canonicalToActivePhaseIdx(IndexTraits::waterPhaseIdx);
+        if (controls.liquid_rate == controls.oil_rate  && pu.phaseIsActive(IndexTraits::waterPhaseIdx)) {
+						const int water_pos = pu.canonicalToActivePhaseIdx(IndexTraits::waterPhaseIdx);
             const Scalar current_water_rate = ws.surface_rates[water_pos];
             if (std::abs(current_water_rate) < 1e-12) {
                 skip = true;
@@ -240,7 +265,11 @@ activeProductionConstraint(const SingleWellState<Scalar, IndexTraits>& ws,
             }
         }
         if (!skip && controls.liquid_rate < current_rate) {
-            return Well::ProducerCMode::LRAT;
+            const Scalar offense = std::abs(controls.liquid_rate - current_rate)/rateScale;
+            if (offense > maxOffense) {
+                newControl = Well::ProducerCMode::LRAT;
+                maxOffense = offense;
+            }
         }
     }
 
@@ -259,8 +288,13 @@ activeProductionConstraint(const SingleWellState<Scalar, IndexTraits>& ws,
             current_rate -= ws.reservoir_rates[gas_pos];
         }
 
-        if (controls.prediction_mode && controls.resv_rate < current_rate)
-            return Well::ProducerCMode::RESV;
+        if (controls.prediction_mode && controls.resv_rate < current_rate) {
+            const Scalar offense = std::abs(controls.resv_rate - current_rate)/rateScale;
+            if (offense > maxOffense) {
+                newControl = Well::ProducerCMode::RESV;
+                maxOffense = offense;
+            }
+        }
 
         if (!controls.prediction_mode) {
             const int fipreg = 0; // not considering the region for now
@@ -281,8 +315,13 @@ activeProductionConstraint(const SingleWellState<Scalar, IndexTraits>& ws,
             for (int p = 0; p < np; ++p)
                 resv_rate += voidage_rates[p];
 
-            if (resv_rate < current_rate)
-                return Well::ProducerCMode::RESV;
+            if (resv_rate < current_rate) {
+                const Scalar offense = std::abs(resv_rate - current_rate)/rateScale;
+                if (offense > maxOffense) {
+                    newControl = Well::ProducerCMode::RESV;
+                    maxOffense = offense;
+                }
+            }
         }
     }
 
@@ -292,34 +331,39 @@ activeProductionConstraint(const SingleWellState<Scalar, IndexTraits>& ws,
         // For trivial group targets (for instance caused by NETV) we dont want to flip to THP control.
         const bool dont_check = (currentControl == Well::ProducerCMode::GRUP && ws.trivial_group_target);
         if (thp > current_thp && !dont_check) {
-            // If WVFPEXP item 4 is set to YES1 or YES2
-            // switching to THP is prevented if the well will
-            // produce at a higher rate with THP control
-            const auto& wvfpexp = well_.wellEcl().getWVFPEXP();
-            bool rate_less_than_potential = true;
-            if (wvfpexp.prevent()) {
-                for (int p = 0; p < well_.numPhases(); ++p) {
-                    // Currently we use the well potentials here computed before the iterations.
-                    // We may need to recompute the well potentials to get a more
-                    // accurate check here.
-                    rate_less_than_potential = rate_less_than_potential && (-ws.surface_rates[p]) <= ws.well_potentials[p];
+            const Scalar offense = std::abs(thp - current_thp)/presScale;
+            if (offense > maxOffense) {
+                // If WVFPEXP item 4 is set to YES1 or YES2
+                // switching to THP is prevented if the well will
+                // produce at a higher rate with THP control
+                const auto& wvfpexp = well_.wellEcl().getWVFPEXP();
+                bool rate_less_than_potential = true;
+                if (wvfpexp.prevent()) {
+                    for (int p = 0; p < well_.numPhases(); ++p) {
+                        // Currently we use the well potentials here computed before the iterations.
+                        // We may need to recompute the well potentials to get a more
+                        // accurate check here.
+                        rate_less_than_potential = rate_less_than_potential && (-ws.surface_rates[p]) <= ws.well_potentials[p];
+                    }
                 }
-            }
-            if (!wvfpexp.prevent() || !rate_less_than_potential) {
-                thp_limit_violated_but_not_switched = false;
-                return Well::ProducerCMode::THP;
-            } else {
-                thp_limit_violated_but_not_switched = true;
-                deferred_logger.info("NOT_SWITCHING_TO_THP",
-                "The THP limit is violated for producer " +
-                well_.name() +
-                ". But the rate will increase if switched to THP. " +
-                "The well is therefore kept at " + WellProducerCMode2String(currentControl));
+                if (!wvfpexp.prevent() || !rate_less_than_potential) {
+                    thp_limit_violated_but_not_switched = false;
+                    newControl = Well::ProducerCMode::THP;
+                    maxOffense = offense;
+                    //return Well::ProducerCMode::THP;
+                } else {
+                    thp_limit_violated_but_not_switched = true;
+                    deferred_logger.info("NOT_SWITCHING_TO_THP",
+                    "The THP limit is violated for producer " +
+                    well_.name() +
+                    ". But the rate will increase if switched to THP. " +
+                    "The well is therefore kept at " + WellProducerCMode2String(currentControl));
+                }
             }
         }
     }
 
-    return currentControl;
+    return newControl;
 }
 
 template class WellConstraints<double, BlackOilDefaultFluidSystemIndices>;
