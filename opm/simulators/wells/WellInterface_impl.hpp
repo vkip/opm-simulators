@@ -1067,12 +1067,6 @@ namespace Opm
                 for (int p = 0; p < np; ++p) {
                     ws.surface_rates[p] = Scalar{0.0};
                 }
-                // Also set connection rates to 0 so they do not contribute to the system source terms
-                for (int perfIdx = 0; perfIdx < this->number_of_local_perforations_; ++perfIdx) {
-                    for (int i = 0; i < RateVector::dimension; ++i) {
-                        connectionRates_[perfIdx][i] = Scalar{0.0};
-                    }
-                }
             }
             if (old_well_operable) {
                 deferred_logger.debug(" well " + this->name() + " gets STOPPED during iteration ");
