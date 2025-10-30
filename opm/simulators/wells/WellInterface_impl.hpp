@@ -804,7 +804,6 @@ namespace Opm
             deferred_logger, /*fixed_control*/true, /*fixed_status*/ true
         );
         this->wellStatus_ = well_status_orig;
-        this->operability_status_.converged_with_zero_rate = converged;
         return converged;
     }
 
@@ -1083,17 +1082,20 @@ namespace Opm
 
     template<typename TypeTag>
     void
-    WellInterface<TypeTag>::addCellRates(RateVector& rates, int cellIdx) const
+    WellInterface<TypeTag>::addCellRates(std::map<int, RateVector>& cellRates_) const
     {
-        if(!this->isOperableAndSolvable() && (!this->wellIsStopped() || this->operability_status_.converged_with_zero_rate))
+        if(!this->operability_status_.solvable)
             return;
 
         for (int perfIdx = 0; perfIdx < this->number_of_local_perforations_; ++perfIdx) {
-            if (this->cells()[perfIdx] == cellIdx) {
-                for (int i = 0; i < RateVector::dimension; ++i) {
-                    rates[i] += connectionRates_[perfIdx][i];
-                }
+            const auto cellIdx = this->cells()[perfIdx];
+            const auto it = cellRates_.find(cellIdx);
+            RateVector rates = (it == cellRates_.end()) ? 0.0 : it->second;
+            for (auto i=0*RateVector::dimension; i < RateVector::dimension; ++i)
+            {
+                rates[i] += connectionRates_[perfIdx][i];
             }
+            cellRates_.insert_or_assign(cellIdx, rates);
         }
     }
 
