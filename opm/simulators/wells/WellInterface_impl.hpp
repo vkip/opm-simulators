@@ -804,6 +804,7 @@ namespace Opm
             deferred_logger, /*fixed_control*/true, /*fixed_status*/ true
         );
         this->wellStatus_ = well_status_orig;
+        this->operability_status_.converged_with_zero_rate = converged;
         return converged;
     }
 
@@ -1090,7 +1091,7 @@ namespace Opm
     void
     WellInterface<TypeTag>::addCellRates(RateVector& rates, int cellIdx) const
     {
-        if(!this->isOperableAndSolvable() && !this->wellIsStopped())
+        if(!this->isOperableAndSolvable() && (!this->wellIsStopped() || this->operability_status_.converged_with_zero_rate))
             return;
 
         for (int perfIdx = 0; perfIdx < this->number_of_local_perforations_; ++perfIdx) {
