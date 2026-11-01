@@ -291,6 +291,9 @@ public:
                 this->grid_->switchToDistributedView();
                 this->grid_->syncDistributedGlobalCellIds();
             }
+
+            // Refining renumbers the leaf cells, so compressedIndex() must follow.
+            this->updateCartesianToCompressedMapping_();
         }
     }
 

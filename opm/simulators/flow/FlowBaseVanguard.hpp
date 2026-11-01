@@ -348,6 +348,8 @@ protected:
     {
         std::size_t num_cells = asImp_().grid().leafGridView().size(0);
         is_interior_.resize(num_cells);
+        // Rebuilt after LGRs are added, when the leaf numbering has changed.
+        cartesianToCompressed_.clear();
 
         ElementMapper elemMapper(this->gridView(), Dune::mcmgElementLayout());
         for (const auto& element : elements(this->gridView()))
