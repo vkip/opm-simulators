@@ -1275,6 +1275,7 @@ list (APPEND PUBLIC_HEADER_FILES
   opm/simulators/linalg/setupPropertyTree.hpp
   opm/simulators/linalg/superlubackend.hh
   opm/simulators/linalg/TPSALinearSolverParameters.hpp
+  opm/simulators/linalg/TrueImpesWeightsOptions.hpp
   opm/simulators/linalg/twolevelmethodcpr.hh
   opm/simulators/linalg/vertexborderlistfromgrid.hh
   opm/simulators/linalg/weightedresidreductioncriterion.hh

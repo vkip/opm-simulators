@@ -386,9 +386,10 @@ private:
                 m_weights.emplace(m_cpuWeights);
 
                 const bool enableThreadParallel = m_parameters.cpr_weights_thread_parallel_;
-                const double rvFallbackThreshold = m_parameters.cpr_weights_rv_fallback_threshold_;
+                const auto options = Amg::TrueImpesWeightsOptions::fromPropertyTree(
+                    m_propertyTree.get_child("preconditioner"s));
                 // CPU implementation wrapped for GPU
-                weightsCalculator = [this, enableThreadParallel, rvFallbackThreshold]() -> GPUVector& {
+                weightsCalculator = [this, enableThreadParallel, options]() -> GPUVector& {
                     // Use the CPU implementation to calculate the weights
                     ElementContext elemCtx(m_simulator);
                     Amg::getTrueImpesWeights(pressureIndex,
@@ -396,7 +397,7 @@ private:
                                              elemCtx, m_simulator.model(),
                                              m_element_chunks,
                                              enableThreadParallel,
-                                             rvFallbackThreshold);
+                                             options);
 
                     // Copy CPU vector to GPU vector using main stream and asynchronous transfer
                     m_weights->copyFromHostAsync(m_cpuWeights);

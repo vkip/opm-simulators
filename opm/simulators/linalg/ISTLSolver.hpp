@@ -654,10 +654,10 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
                             getMatrix(), pressIndex, transpose, enableThreadParallel);
                     };
                 } else if ( weightsType == "trueimpes" ) {
-                    const double rvFallbackThreshold =
-                        this->parameters_[0].cpr_weights_rv_fallback_threshold_;
+                    const auto options = Amg::TrueImpesWeightsOptions::fromPropertyTree(
+                        prm.get_child("preconditioner"s));
                     weightsCalculator =
-                        [this, pressIndex, enableThreadParallel, rvFallbackThreshold]
+                        [this, pressIndex, enableThreadParallel, options]
                         {
                             Vector weights(rhs_->size());
                             ElementContext elemCtx(simulator_);
@@ -667,7 +667,7 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
                                                      simulator_.model(),
                                                      *element_chunks_,
                                                      enableThreadParallel,
-                                                     rvFallbackThreshold
+                                                     options
                             );
                             return weights;
                         };
