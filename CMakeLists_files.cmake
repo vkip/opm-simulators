@@ -1115,6 +1115,7 @@ list (APPEND PUBLIC_HEADER_FILES
   opm/simulators/flow/FlowGenericProblem.hpp
   opm/simulators/flow/FlowGenericProblem_impl.hpp
   opm/simulators/flow/FlowGenericVanguard.hpp
+  opm/simulators/flow/FluxParameters.hpp
   opm/simulators/flow/FlowMain.hpp
   opm/simulators/flow/FlowProblem.hpp
   opm/simulators/flow/FlowProblemBlackoil.hpp
