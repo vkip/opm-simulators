@@ -81,7 +81,6 @@ void FlowLinearSolverParameters::init(bool cprRequestedInDataFile)
 
     accelerator_mode_ = Parameters::Get<Parameters::AcceleratorMode>();
     cpr_weights_thread_parallel_ = Parameters::Get<Parameters::CprWeightsThreadParallel>();
-    cpr_weights_rv_fallback_threshold_ = Parameters::Get<Parameters::CprWeightsRvFallbackThreshold>();
     gpu_device_id_ = Parameters::Get<Parameters::GpuDeviceId>();
     opencl_platform_id_ = Parameters::Get<Parameters::OpenclPlatformId>();
     opencl_ilu_parallel_ = Parameters::Get<Parameters::OpenclIluParallel>();
@@ -205,13 +204,6 @@ void FlowLinearSolverParameters::registerParameters()
     Parameters::Register<Parameters::CprWeightsThreadParallel>
         ("Enable OpenMP thread parallelization of CPR weight calculation. "
             "This can improve performance for large models but is disabled by default");
-    Parameters::Register<Parameters::CprWeightsRvFallbackThreshold>
-        ("Use analytic instead of numerical true-IMPES CPR weights in cells without "
-            "oil (Rv primary variable) where |d(gas storage)/dRv| / |d(oil storage)/dRv| "
-            "exceeds this value. Such a large ratio indicates a gas formation volume "
-            "factor that is extremely sensitive to Rv (typically PVTG tables where Bg "
-            "changes significantly over a tiny Rv range), which makes the numerical "
-            "weights degenerate. A non-positive value disables the fallback");
 
     Parameters::SetDefault<Parameters::LinearSolverVerbosity>(0);
 }
@@ -245,7 +237,6 @@ void FlowLinearSolverParameters::reset()
     gpu_aware_mpi_              = false;
     verify_gpu_aware_mpi_       = false;
     cpr_weights_thread_parallel_ = false;
-    cpr_weights_rv_fallback_threshold_ = 1e4;
 }
 
 } // namespace Opm

@@ -26,6 +26,7 @@
 #include <fmt/format.h>
 
 #include <opm/grid/utility/ElementChunks.hpp>
+#include <opm/simulators/linalg/TrueImpesWeightsOptions.hpp>
 #include <opm/simulators/utils/DeferredLoggingErrorHelpers.hpp>
 #include <opm/material/common/MathToolbox.hpp>
 #include <opm/models/parallel/threadmanager.hpp>
@@ -107,14 +108,19 @@ namespace Details
         }
     }
 
-    /// Whether the true-IMPES weights of Model can fall back to analytic
-    /// weights in cells where oil is absent (black-oil models only).
+    /// Whether Model is a black-oil type model, for which the true-IMPES
+    /// weights support the analytic fallback in cells where oil is absent and
+    /// scaling to reservoir volume units.
     template <class Model, class ElementContext>
-    constexpr bool supportsRvWeightFallback =
+    constexpr bool isBlackOilTrueImpesModel =
         requires (const Model& model, const ElementContext& elemCtx) {
             typename Model::Indices;
             typename Model::FluidSystem;
+            Model::Indices::conti0EqIdx;
+            Model::Indices::numPhases;
+            Model::Indices::compositionSwitchIdx;
             model.solution(0)[0].primaryVarsMeaningGas();
+            elemCtx.intensiveQuantities(0, 0).porosity();
             elemCtx.intensiveQuantities(0, 0).fluidState().invB(0);
             elemCtx.intensiveQuantities(0, 0).fluidState().Rv();
         };
@@ -230,16 +236,18 @@ namespace Amg
     /// storage, as happens with PVTG tables where Bg changes considerably over a
     /// tiny Rv range, the gas weight becomes negligible and the pressure equation
     /// degenerates to the vaporised-oil equation with almost no pressure coupling.
-    /// If rv_fallback_threshold is positive, such cells, defined by
+    /// If options.rv_fallback_threshold is positive, such cells, defined by
     /// |d(gas storage)/dRv| / |d(oil storage)/dRv| > rv_fallback_threshold,
     /// use the analytic weights of getTrueImpesWeightsAnalytic() instead.
+    ///
+    /// The weights of each cell are then scaled according to options.scaling.
     template<class Vector, class ElementContext, class Model, class ElementChunksType>
     void getTrueImpesWeights(int pressureVarIndex, Vector& weights,
                              const ElementContext& elemCtx,
                              const Model& model,
                              const ElementChunksType& element_chunks,
                              [[maybe_unused]] bool enable_thread_parallel,
-                             [[maybe_unused]] const double rv_fallback_threshold = 0.0)
+                             [[maybe_unused]] const TrueImpesWeightsOptions& options = {})
     {
         using VectorBlockType = typename Vector::block_type;
         using Matrix = typename std::decay_t<decltype(model.linearizer().jacobian())>;
@@ -315,22 +323,16 @@ namespace Amg
                     };
                 }
 
-                const double abs_max =
-                    *std::ranges::max_element(bweights,
-                                              [](double a, double b)
-                                              { return std::fabs(a) < std::fabs(b); });
-                // probably a scaling which could give approximately total compressibility would be better
-                bweights /=  std::fabs(abs_max); // given normal densities this scales weights to about 1.
-
                 const auto index = localElemCtx.globalSpaceIndex(/*spaceIdx=*/0, /*timeIdx=*/0);
-                if constexpr (Details::supportsRvWeightFallback<Model, ElementContext>) {
+                if constexpr (Details::isBlackOilTrueImpesModel<Model, ElementContext>) {
                     using FluidSystem = typename Model::FluidSystem;
                     using Indices = typename Model::Indices;
                     using PrimaryVariables = std::decay_t<decltype(model.solution(0)[0])>;
+                    const auto& intQuants = localElemCtx.intensiveQuantities(/*spaceIdx=*/0, /*timeIdx=*/0);
                     constexpr unsigned rvIdx = Indices::compositionSwitchIdx;
                     if constexpr (rvIdx < static_cast<unsigned>(numEq)) {
                         const auto& priVars = model.solution(/*timeIdx=*/0)[index];
-                        if (rv_fallback_threshold > 0.0
+                        if (options.rv_fallback_threshold > 0.0
                             && FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx)
                             && FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx)
                             && priVars.primaryVarsMeaningGas() == PrimaryVariables::GasMeaning::Rv)
@@ -341,18 +343,37 @@ namespace Amg
                                 + FluidSystem::canonicalToActiveCompIdx(FluidSystem::gasCompIdx);
                             const double dOilDRv = std::abs(static_cast<double>(block_transpose[rvIdx][oilEqIdx]));
                             const double dGasDRv = std::abs(static_cast<double>(block_transpose[rvIdx][gasEqIdx]));
-                            if (dGasDRv > rv_fallback_threshold * dOilDRv) {
-                                const auto& fs = localElemCtx.intensiveQuantities(/*spaceIdx=*/0, /*timeIdx=*/0).fluidState();
-                                Details::analyticImpesWeights<FluidSystem>(fs, priVars, bweights);
-                                const double analytic_max =
-                                    std::abs(*std::ranges::max_element(bweights,
-                                                                       [](double a, double b)
-                                                                       { return std::fabs(a) < std::fabs(b); }));
-                                bweights /= analytic_max;
+                            if (dGasDRv > options.rv_fallback_threshold * dOilDRv) {
+                                bweights = 0.0;
+                                Details::analyticImpesWeights<FluidSystem>(intQuants.fluidState(), priVars, bweights);
                             }
                         }
                     }
+                    if (options.scaling == TrueImpesWeightsOptions::Scaling::PoreVolume) {
+                        // Scale to reservoir volume units, where the weighted
+                        // storage of the mass conservation equations equals the
+                        // porosity.  Keeping the same units in every cell keeps the
+                        // CPR pressure matrix close to symmetric, which matters to
+                        // AMG; the max-abs scaling below changes the units between,
+                        // e.g., cells with and without oil.
+                        double weightedStorage = 0.0;
+                        for (int eq = Indices::conti0EqIdx; eq < Indices::conti0EqIdx + Indices::numPhases; ++eq) {
+                            weightedStorage += static_cast<double>(bweights[eq]) * getValue(storage[eq]);
+                        }
+                        const double factor = getValue(intQuants.porosity()) / weightedStorage;
+                        if (weightedStorage > 0.0 && std::isfinite(factor)) {
+                            bweights *= factor;
+                            weights[index] = bweights;
+                            continue;
+                        }
+                    }
                 }
+
+                const double abs_max =
+                    *std::ranges::max_element(bweights,
+                                              [](double a, double b)
+                                              { return std::fabs(a) < std::fabs(b); });
+                bweights /= std::fabs(abs_max); // given normal densities this scales weights to about 1.
                 weights[index] = bweights;
             }
         }
