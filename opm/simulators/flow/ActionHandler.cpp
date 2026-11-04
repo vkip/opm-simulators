@@ -235,6 +235,7 @@ applyActions(const int reportStep,
 
 
     SimulatorUpdate sim_update;
+    bool scheduleRebuilt = false;
     for (const auto& pyaction : actions.pending_python(actionState_)) {
         // The std::unordered_map<std::string, Scalar> wellpi contains the well production indices from the last
         // timestep. This map is needed for the keyword WELPI. For a PyAction, we do not know which wells are
@@ -243,6 +244,7 @@ applyActions(const int reportStep,
         const auto wellpi = fetchWellPI<Scalar>(this->wellModel_, wellpi_wells, this->comm_);
         auto sim_update_current = schedule_.runPyAction(reportStep, *pyaction, actionState_,
                                                 ecl_state_, summaryState_, wellpi);
+        scheduleRebuilt = true;
 
         if (const auto pyRes = this->actionState_.python_result(pyaction->name());
             !pyRes.has_value() || !*pyRes)
@@ -284,6 +286,7 @@ applyActions(const int reportStep,
 
         const auto sim_update_current = this->schedule_
             .applyAction(reportStep, *action, matches, wellpi, true);
+        scheduleRebuilt = true;
 
         sim_update.append(sim_update_current);
         this->actionState_.add_run(*action, simTime, actionResult);
@@ -341,6 +344,7 @@ applyActions(const int reportStep,
 
         const auto sim_update_current = this->schedule_
             .applyAction(reportStep, action, matches, wellpi, true);
+        scheduleRebuilt = true;
 
         sim_update.append(sim_update_current);
         this->actionState_.add_run(action, simTime, actionResult);
@@ -348,6 +352,12 @@ applyActions(const int reportStep,
 
     if (non_triggered > 0) {
         logInactiveActions(non_triggered, ts);
+    }
+
+    // An action rebuilds the schedule from this report step on, putting the
+    // COMPDAT connections inside LGR boxes back into the cells they refine.
+    if (const auto& lgrs = this->ecl_state_.getLgrs(); scheduleRebuilt && (lgrs.size() > 0)) {
+        this->schedule_.refineConnectionsIntoLgrs(lgrs, reportStep);
     }
 
     bool commit_wellstate = false;
