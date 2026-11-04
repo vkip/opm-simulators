@@ -57,6 +57,67 @@ namespace Details
 
         return tmp;
     }
+
+    /// Analytic true-IMPES weights of a single black-oil cell (not normalised).
+    ///
+    /// The sequential residual is a linear combination of the mass balance
+    /// residuals with coefficients (for water, oil, gas)
+    ///    1/bw,
+    ///    (1/bo - rs/bg)/(1-rs*rv),
+    ///    (1/bg - rv/bo)/(1-rs*rv).
+    template <class FluidSystem, class FluidState, class PrimaryVariables, class BlockType>
+    void analyticImpesWeights(const FluidState& fs,
+                              const PrimaryVariables& priVars,
+                              BlockType& bweights)
+    {
+        const auto invB = [&fs](const unsigned phaseIdx)
+        { return static_cast<double>(getValue(fs.invB(phaseIdx))); };
+
+        if (FluidSystem::phaseIsActive(FluidSystem::waterPhaseIdx)) {
+            const unsigned activeCompIdx = FluidSystem::canonicalToActiveCompIdx(
+                FluidSystem::solventComponentIndex(FluidSystem::waterPhaseIdx));
+            bweights[activeCompIdx] = 1.0 / invB(FluidSystem::waterPhaseIdx);
+        }
+
+        double denominator = 1.0;
+        double rs = static_cast<double>(getValue(fs.Rs()));
+        double rv = static_cast<double>(getValue(fs.Rv()));
+        if (priVars.primaryVarsMeaningGas() == PrimaryVariables::GasMeaning::Rv) {
+            rs = 0.0;
+        }
+        if (priVars.primaryVarsMeaningGas() == PrimaryVariables::GasMeaning::Rs) {
+            rv = 0.0;
+        }
+        if (FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx)
+            && FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx)) {
+            denominator = 1.0 - rs * rv;
+        }
+
+        if (FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx)) {
+            const unsigned activeCompIdx = FluidSystem::canonicalToActiveCompIdx(
+                FluidSystem::solventComponentIndex(FluidSystem::oilPhaseIdx));
+            bweights[activeCompIdx] =
+                (1.0 / invB(FluidSystem::oilPhaseIdx) - rs / invB(FluidSystem::gasPhaseIdx)) / denominator;
+        }
+        if (FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx)) {
+            const unsigned activeCompIdx = FluidSystem::canonicalToActiveCompIdx(
+                FluidSystem::solventComponentIndex(FluidSystem::gasPhaseIdx));
+            bweights[activeCompIdx] =
+                (1.0 / invB(FluidSystem::gasPhaseIdx) - rv / invB(FluidSystem::oilPhaseIdx)) / denominator;
+        }
+    }
+
+    /// Whether the true-IMPES weights of Model can fall back to analytic
+    /// weights in cells where oil is absent (black-oil models only).
+    template <class Model, class ElementContext>
+    constexpr bool supportsRvWeightFallback =
+        requires (const Model& model, const ElementContext& elemCtx) {
+            typename Model::Indices;
+            typename Model::FluidSystem;
+            model.solution(0)[0].primaryVarsMeaningGas();
+            elemCtx.intensiveQuantities(0, 0).fluidState().invB(0);
+            elemCtx.intensiveQuantities(0, 0).fluidState().Rv();
+        };
 } // namespace Details
 
 namespace Amg
@@ -161,12 +222,24 @@ namespace Amg
     }
 #endif
 
+    /// True-IMPES CPR weights from the storage derivatives of each cell.
+    ///
+    /// In cells without oil (gas primary variable Rv) the weights must eliminate
+    /// the Rv column of the storage derivatives using the oil (vaporised oil) and
+    /// gas equations.  If the gas storage is far more sensitive to Rv than the oil
+    /// storage, as happens with PVTG tables where Bg changes considerably over a
+    /// tiny Rv range, the gas weight becomes negligible and the pressure equation
+    /// degenerates to the vaporised-oil equation with almost no pressure coupling.
+    /// If rv_fallback_threshold is positive, such cells, defined by
+    /// |d(gas storage)/dRv| / |d(oil storage)/dRv| > rv_fallback_threshold,
+    /// use the analytic weights of getTrueImpesWeightsAnalytic() instead.
     template<class Vector, class ElementContext, class Model, class ElementChunksType>
     void getTrueImpesWeights(int pressureVarIndex, Vector& weights,
                              const ElementContext& elemCtx,
                              const Model& model,
                              const ElementChunksType& element_chunks,
-                             [[maybe_unused]] bool enable_thread_parallel)
+                             [[maybe_unused]] bool enable_thread_parallel,
+                             [[maybe_unused]] const double rv_fallback_threshold = 0.0)
     {
         using VectorBlockType = typename Vector::block_type;
         using Matrix = typename std::decay_t<decltype(model.linearizer().jacobian())>;
@@ -250,6 +323,36 @@ namespace Amg
                 bweights /=  std::fabs(abs_max); // given normal densities this scales weights to about 1.
 
                 const auto index = localElemCtx.globalSpaceIndex(/*spaceIdx=*/0, /*timeIdx=*/0);
+                if constexpr (Details::supportsRvWeightFallback<Model, ElementContext>) {
+                    using FluidSystem = typename Model::FluidSystem;
+                    using Indices = typename Model::Indices;
+                    using PrimaryVariables = std::decay_t<decltype(model.solution(0)[0])>;
+                    constexpr unsigned rvIdx = Indices::compositionSwitchIdx;
+                    if constexpr (rvIdx < static_cast<unsigned>(numEq)) {
+                        const auto& priVars = model.solution(/*timeIdx=*/0)[index];
+                        if (rv_fallback_threshold > 0.0
+                            && FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx)
+                            && FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx)
+                            && priVars.primaryVarsMeaningGas() == PrimaryVariables::GasMeaning::Rv)
+                        {
+                            const unsigned oilEqIdx = Indices::conti0EqIdx
+                                + FluidSystem::canonicalToActiveCompIdx(FluidSystem::oilCompIdx);
+                            const unsigned gasEqIdx = Indices::conti0EqIdx
+                                + FluidSystem::canonicalToActiveCompIdx(FluidSystem::gasCompIdx);
+                            const double dOilDRv = std::abs(static_cast<double>(block_transpose[rvIdx][oilEqIdx]));
+                            const double dGasDRv = std::abs(static_cast<double>(block_transpose[rvIdx][gasEqIdx]));
+                            if (dGasDRv > rv_fallback_threshold * dOilDRv) {
+                                const auto& fs = localElemCtx.intensiveQuantities(/*spaceIdx=*/0, /*timeIdx=*/0).fluidState();
+                                Details::analyticImpesWeights<FluidSystem>(fs, priVars, bweights);
+                                const double analytic_max =
+                                    std::abs(*std::ranges::max_element(bweights,
+                                                                       [](double a, double b)
+                                                                       { return std::fabs(a) < std::fabs(b); }));
+                                bweights /= analytic_max;
+                            }
+                        }
+                    }
+                }
                 weights[index] = bweights;
             }
         }
@@ -264,22 +367,10 @@ namespace Amg
                                      const ElementChunksType& element_chunks,
                                      [[maybe_unused]] bool enable_thread_parallel)
     {
-        // The sequential residual is a linear combination of the
-        // mass balance residuals, with coefficients equal to (for
-        // water, oil, gas):
-        //    1/bw,
-        //    (1/bo - rs/bg)/(1-rs*rv)
-        //    (1/bg - rv/bo)/(1-rs*rv)
-        // These coefficients must be applied for both the residual and
-        // Jacobian.
+        // See Details::analyticImpesWeights() for the coefficients. They must be
+        // applied for both the residual and Jacobian.
         using FluidSystem = typename Model::FluidSystem;
-        using LhsEval = double;
-
-        using PrimaryVariables = typename Model::PrimaryVariables;
         using VectorBlockType = typename Vector::block_type;
-        using Evaluation =
-            typename std::decay_t<decltype(model.localLinearizer(ThreadManager::threadId()).localResidual().residual(0))>::block_type;
-        using Toolbox = MathToolbox<Evaluation>;
 
         const auto& solution = model.solution(/*timeIdx*/ 0);
         VectorBlockType bweights;
@@ -302,43 +393,7 @@ namespace Amg
                 const auto& intQuants = localElemCtx.intensiveQuantities(/*spaceIdx=*/0, /*timeIdx=*/0);
                 const auto& fs = intQuants.fluidState();
 
-                if (FluidSystem::phaseIsActive(FluidSystem::waterPhaseIdx)) {
-                    const unsigned activeCompIdx = FluidSystem::canonicalToActiveCompIdx(
-                        FluidSystem::solventComponentIndex(FluidSystem::waterPhaseIdx));
-                    bweights[activeCompIdx]
-                        = Toolbox::template decay<LhsEval>(1 / fs.invB(FluidSystem::waterPhaseIdx));
-                }
-
-                double denominator = 1.0;
-                double rs = Toolbox::template decay<double>(fs.Rs());
-                double rv = Toolbox::template decay<double>(fs.Rv());
-                const auto& priVars = solution[index];
-                if (priVars.primaryVarsMeaningGas() == PrimaryVariables::GasMeaning::Rv) {
-                    rs = 0.0;
-                }
-                if (priVars.primaryVarsMeaningGas() == PrimaryVariables::GasMeaning::Rs) {
-                    rv = 0.0;
-                }
-                if (FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx)
-                    && FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx)) {
-                    denominator = Toolbox::template decay<LhsEval>(1 - rs * rv);
-                }
-
-                if (FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx)) {
-                    const unsigned activeCompIdx = FluidSystem::canonicalToActiveCompIdx(
-                        FluidSystem::solventComponentIndex(FluidSystem::oilPhaseIdx));
-                    bweights[activeCompIdx] = Toolbox::template decay<LhsEval>(
-                        (1 / fs.invB(FluidSystem::oilPhaseIdx) - rs / fs.invB(FluidSystem::gasPhaseIdx))
-                        / denominator);
-                }
-                if (FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx)) {
-                    const unsigned activeCompIdx = FluidSystem::canonicalToActiveCompIdx(
-                        FluidSystem::solventComponentIndex(FluidSystem::gasPhaseIdx));
-                    bweights[activeCompIdx] = Toolbox::template decay<LhsEval>(
-                        (1 / fs.invB(FluidSystem::gasPhaseIdx) - rv / fs.invB(FluidSystem::oilPhaseIdx))
-                        / denominator);
-                }
-
+                Details::analyticImpesWeights<FluidSystem>(fs, solution[index], bweights);
                 weights[index] = bweights;
             }
         }

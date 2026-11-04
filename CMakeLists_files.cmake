@@ -559,6 +559,7 @@ list (APPEND TEST_SOURCE_FILES
   tests/test_tpsa_matrix.cpp
   tests/test_tpsa_preconditioner.cpp
   tests/test_tpsa_primaryvariables.cpp
+  tests/test_trueimpes_rv_fallback.cpp
   tests/test_vfpproperties.cpp
   tests/test_SystemCprwPressureStage.cpp
   tests/test_MswCprWellDiagonal.cpp
@@ -739,6 +740,7 @@ list (APPEND TEST_DATA_FILES
   tests/equil_rsvd_and_rvvd.DATA
   tests/equil_rsvd_and_rvvd_and_rvwvd.DATA
   tests/tpsa_ex.data
+  tests/trueimpes_rv_fallback.DATA
   tests/wetgas.DATA
   tests/satfuncEPS_B.DATA
   tests/wells_manager_data.data
