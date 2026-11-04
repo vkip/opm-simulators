@@ -90,6 +90,7 @@ struct OpenclIluParallel { static constexpr bool value = true; }; // note: false
 struct GpuAwareMpi { static constexpr bool value = false; };
 struct VerifyGpuAwareMpi { static constexpr bool value = false; };
 struct CprWeightsThreadParallel { static constexpr bool value = false; };
+struct CprWeightsRvFallbackThreshold { static constexpr double value = 1e4; };
 } // namespace Opm::Parameters
 
 namespace Opm {
@@ -124,6 +125,7 @@ struct FlowLinearSolverParameters
     bool gpu_aware_mpi_;
     bool verify_gpu_aware_mpi_;
     bool cpr_weights_thread_parallel_;
+    double cpr_weights_rv_fallback_threshold_;
 
     FlowLinearSolverParameters() { reset(); }
 
