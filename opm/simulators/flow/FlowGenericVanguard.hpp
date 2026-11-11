@@ -90,6 +90,9 @@ struct ZoltanPhgEdgeSizeThreshold { static constexpr auto value = 0.35; };
 
 struct ZoltanParams { static constexpr auto value = "graph"; };
 
+struct PartitionWellWeight { static constexpr double value = 0.0; };
+struct PartitionWellEdgeWeight { static constexpr double value = 0.0; };
+
 } // namespace Opm::Parameters
 
 namespace Opm {
@@ -394,6 +397,9 @@ protected:
     std::string zoltanParams_;
 
     std::string metisParams_;
+
+    double partitionWellWeight_{0.0};
+    double partitionWellEdgeWeight_{0.0};
 
     std::string externalPartitionFile_{};
 #endif // HAVE_MPI

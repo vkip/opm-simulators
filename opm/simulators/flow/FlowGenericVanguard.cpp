@@ -165,6 +165,13 @@ FlowGenericVanguard::FlowGenericVanguard(SimulationModelParams&& params)
     zoltanPhgEdgeSizeThreshold_ = Parameters::Get<Parameters::ZoltanPhgEdgeSizeThreshold>();
     metisParams_ = Parameters::Get<Parameters::MetisParams>();
 
+    partitionWellWeight_ = Parameters::Get<Parameters::PartitionWellWeight>();
+    partitionWellEdgeWeight_ = Parameters::Get<Parameters::PartitionWellEdgeWeight>();
+    if (partitionWellWeight_ < 0 || partitionWellEdgeWeight_ < 0) {
+        throw std::invalid_argument("The parameters --partition-well-weight and "
+                                    "--partition-well-edge-weight must not be negative.");
+    }
+
     externalPartitionFile_ = Parameters::Get<Parameters::ExternalPartition>();
 #endif // HAVE_MPI
 
@@ -517,6 +524,18 @@ void FlowGenericVanguard::registerParameters_()
          "from a JSON file by giving the filename here, with extension '.json'. "
          "See http://glaros.dtc.umn.edu/gkhome/fetch/sw/metis/manual.pdf "
          "for available METIS options.");
+    Parameters::Register<Parameters::PartitionWellWeight>
+        ("Weight of the well work in the load balancing, as the weight of one "
+         "cell per well segment (a standard well counts as one segment). "
+         "Applies to the open wells at the end of the schedule. "
+         "0 (the default) ignores the well work. Only used with "
+         "--partition-method=zoltanwell.");
+    Parameters::Register<Parameters::PartitionWellEdgeWeight>
+        ("With --allow-distributed-wells=true: weight of graph edges added between "
+         "consecutive connections of each well, in units of the median edge weight "
+         "of the grid graph. Larger values make the partitioner split fewer wells "
+         "and over fewer processes. 0 (the default) adds no edges. Only used with "
+         "--partition-method=zoltanwell.");
     Parameters::Register<Parameters::ExternalPartition>
         ("Name of file from which to load an externally generated "
          "partitioning of the model's active cells for MPI "

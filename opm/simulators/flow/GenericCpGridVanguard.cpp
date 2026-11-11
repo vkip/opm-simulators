@@ -37,6 +37,9 @@
 
 #include <opm/input/eclipse/EclipseState/EclipseState.hpp>
 #include <opm/input/eclipse/Schedule/Schedule.hpp>
+#include <opm/input/eclipse/Schedule/ScheduleState.hpp>
+#include <opm/input/eclipse/Schedule/MSW/WellSegments.hpp>
+#include <opm/input/eclipse/Schedule/Well/NameOrder.hpp>
 #include <opm/input/eclipse/Schedule/Well/Well.hpp>
 #include <opm/input/eclipse/Schedule/Well/WellConnections.hpp>
 #include <opm/input/eclipse/EclipseState/Grid/LgrCollection.hpp>
@@ -55,6 +58,8 @@
 #include <opm/simulators/flow/FemCpGridCompat.hpp>
 #endif //HAVE_DUNE_FEM
 
+#include <algorithm>
+#include <array>
 #include <cassert>
 #include <fstream>
 #include <iterator>
@@ -62,6 +67,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <fmt/format.h>
@@ -167,19 +173,41 @@ doLoadBalance_(const Dune::EdgeWeightMethod             edgeWeightsMethod,
                const int                                numJacobiBlocks,
                const bool                               enableEclOutput)
 {
-    if (((partitionMethod == Dune::PartitionMethod::zoltan) ||
-         (partitionMethod == Dune::PartitionMethod::zoltanGoG)) &&
-        !this->zoltanParams().empty())
     {
-        this->grid_->setPartitioningParams
-            (setupZoltanParams(this->zoltanParams(),
-                               this->zoltanPhgEdgeSizeThreshold()));
-    }
-    else if ((partitionMethod == Dune::PartitionMethod::metis) &&
-        !this->metisParams().empty())
-    {
-        this->grid_->setPartitioningParams
-            (setupMetisParams(this->metisParams()));
+        auto params = std::map<std::string, std::string>{};
+        bool haveParams = false;
+        if (((partitionMethod == Dune::PartitionMethod::zoltan) ||
+             (partitionMethod == Dune::PartitionMethod::zoltanGoG)) &&
+            !this->zoltanParams().empty())
+        {
+            params = setupZoltanParams(this->zoltanParams(),
+                                       this->zoltanPhgEdgeSizeThreshold());
+            haveParams = true;
+        }
+        else if ((partitionMethod == Dune::PartitionMethod::metis) &&
+            !this->metisParams().empty())
+        {
+            params = setupMetisParams(this->metisParams());
+            haveParams = true;
+        }
+
+        // Well work in the partitioning, interpreted by the 'zoltanwell' partitioner
+        // (see Opm::addWellWorkToGraph() in opm-grid).
+        const bool wellWork = (this->partitionWellWeight() > 0) ||
+                              (this->partitionWellEdgeWeight() > 0);
+        if (wellWork && (partitionMethod == Dune::PartitionMethod::zoltanGoG)) {
+            params["WellWorkWeight"] = fmt::format("{}", this->partitionWellWeight());
+            params["WellEdgeWeight"] = fmt::format("{}", this->partitionWellEdgeWeight());
+            haveParams = true;
+        }
+        else if (wellWork && (this->grid_->comm().rank() == 0)) {
+            OpmLog::warning("The options --partition-well-weight and --partition-well-edge-weight "
+                            "are only used with --partition-method=zoltanwell.");
+        }
+
+        if (haveParams) {
+            this->grid_->setPartitioningParams(params);
+        }
     }
 
     const auto mpiSize = this->grid_->comm().size();
@@ -222,6 +250,15 @@ doLoadBalance_(const Dune::EdgeWeightMethod             edgeWeightsMethod,
             : std::vector<Well>{};
 
         const auto& possibleFutureConnections = schedule.getPossibleFutureConnections();
+
+        // Estimated well work for the partitioner and the load balancing report: the
+        // number of segments of each well averaged over the simulated time while open.
+        const auto wellWork = (mpiSize > 1)
+            ? computeWellWork(schedule, restart ? eclState1.getInitConfig().getRestartStep() : 0)
+            : std::unordered_map<std::string, double>{};
+        if (partitionMethod == Dune::PartitionMethod::zoltanGoG && this->partitionWellWeight() > 0) {
+            this->grid_->setWellWork(wellWork);
+        }
                 // Mechanics couples cells across zero-transmissibility faces,
                 // so the overlap layer must not be pruned by transmissibility
                 // in mechanical runs (same reasoning as for thermal runs).
@@ -287,6 +324,10 @@ doLoadBalance_(const Dune::EdgeWeightMethod             edgeWeightsMethod,
         }
         std::ranges::sort(parallelWells);
 
+        if (mpiSize > 1) {
+            this->logPartitionWellWork(wellWork, parallelWells);
+        }
+
         // Calling Schedule::filterConnections would remove any perforated
         // cells that exist only on other ranks even in the case of
         // distributed wells.  But we need all connections to figure out the
@@ -339,6 +380,78 @@ distributeFieldProps_(EclipseState& eclState1)
 
         throw std::invalid_argument { message };
     }
+}
+
+template <class ElementMapper, class GridView, class Scalar>
+void GenericCpGridVanguard<ElementMapper, GridView, Scalar>::
+logPartitionWellWork(const std::unordered_map<std::string, double>& wellWork,
+                     const FlowGenericVanguard::ParallelWellStruct& parallelWells) const
+{
+    const auto& comm = this->grid_->comm();
+
+    // Interior cells, wells with perforations here that are open some time, and their
+    // work (time-averaged open segments). A distributed well counts on all its processes,
+    // as its segments are handled on each.
+    std::array<double, 3> local{};
+    for ([[maybe_unused]] const auto& elem :
+             elements(this->grid_->leafGridView(), Dune::Partitions::interior)) {
+        local[0] += 1;
+    }
+    for (const auto& [name, onThisRank] : parallelWells) {
+        const auto it = wellWork.find(name);
+        if (!onThisRank || it == wellWork.end() || it->second <= 0) {
+            continue;
+        }
+        local[1] += 1;
+        local[2] += it->second;
+    }
+
+    std::vector<double> all(local.size() * comm.size());
+    comm.gather(local.data(), all.data(), local.size(), 0);
+    if (comm.rank() != 0) {
+        return;
+    }
+
+    std::string msg = "\nLoad balancing: interior cells, wells open during the run and their work\n"
+                      "(segments averaged over the simulated time) per process:\n"
+                      "   rank       cells   wells   well work\n";
+    std::array<double, 3> sum{}, max{};
+    for (int r = 0; r < comm.size(); ++r) {
+        msg += fmt::format("{:>7}{:>12}{:>8}{:>12.1f}\n", r, all[3*r], all[3*r + 1], all[3*r + 2]);
+        for (std::size_t i = 0; i < sum.size(); ++i) {
+            sum[i] += all[3*r + i];
+            max[i] = std::max(max[i], all[3*r + i]);
+        }
+    }
+    auto ratio = [&](std::size_t i) { return sum[i] > 0 ? max[i] * comm.size() / sum[i] : 1.0; };
+    msg += fmt::format("max/mean{:>11.2f}{:>8.2f}{:>12.2f}\n", ratio(0), ratio(1), ratio(2));
+    OpmLog::info(msg);
+}
+
+template <class ElementMapper, class GridView, class Scalar>
+std::unordered_map<std::string, double>
+GenericCpGridVanguard<ElementMapper, GridView, Scalar>::
+computeWellWork(const Schedule& schedule, const std::size_t firstStep)
+{
+    std::unordered_map<std::string, double> work;
+    double totalTime = 0.0;
+    for (std::size_t step = firstStep; step + 1 < schedule.size(); ++step) {
+        const double dt = schedule.stepLength(step);
+        totalTime += dt;
+        const auto& state = schedule[step];
+        for (const auto& name : state.well_order()) {
+            const auto& well = state.wells.get(name);
+            if (well.getStatus() == Well::Status::OPEN) {
+                work[name] += dt * (well.isMultiSegment() ? well.getSegments().size() : 1);
+            }
+        }
+    }
+    if (totalTime > 0) {
+        for (auto& w : work) {
+            w.second /= totalTime;
+        }
+    }
+    return work;
 }
 
 template <class ElementMapper, class GridView, class Scalar>

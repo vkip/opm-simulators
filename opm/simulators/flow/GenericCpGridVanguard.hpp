@@ -35,6 +35,8 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 #if HAVE_MPI
@@ -213,7 +215,21 @@ protected:
     virtual const std::string& zoltanParams() const = 0;
     virtual double zoltanPhgEdgeSizeThreshold() const = 0;
     virtual const std::string& metisParams() const = 0;
+    virtual double partitionWellWeight() const = 0;
+    virtual double partitionWellEdgeWeight() const = 0;
 
+private:
+    /// \brief Log, per process, the interior cells and the wells with perforations
+    /// there and their estimated work (see computeWellWork()) after load balancing.
+    void logPartitionWellWork(const std::unordered_map<std::string, double>& wellWork,
+                              const FlowGenericVanguard::ParallelWellStruct& parallelWells) const;
+
+    /// \brief Estimated work of each well: its number of segments (1 for a standard
+    /// well), averaged over the simulated time (from report step firstStep) while open.
+    static std::unordered_map<std::string, double>
+    computeWellWork(const Schedule& schedule, std::size_t firstStep);
+
+protected:
 #endif  // HAVE_MPI
 
     void allocCartMapper();

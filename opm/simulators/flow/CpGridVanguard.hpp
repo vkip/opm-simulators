@@ -360,6 +360,16 @@ protected:
     {
         return this->metisParams_;
     }
+
+    double partitionWellWeight() const override
+    {
+        return this->partitionWellWeight_;
+    }
+
+    double partitionWellEdgeWeight() const override
+    {
+        return this->partitionWellEdgeWeight_;
+    }
 #endif
 
     // \Note: this globalTrans_ is used for domain decomposition and INIT file output.
