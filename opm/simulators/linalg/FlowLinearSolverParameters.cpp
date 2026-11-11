@@ -59,6 +59,7 @@ void FlowLinearSolverParameters::init(bool cprRequestedInDataFile)
                   "Invalid value " + std::to_string(cpr_pre_smooth_)
                   + " for --cpr-pre-smooth, which must not be negative.");
     }
+    cpr_local_well_smoothing_ = Parameters::Get<Parameters::CprLocalWellSmoothing>();
     gpu_aware_mpi_ = Parameters::Get<Parameters::GpuAwareMpi>();
 
     if (!Parameters::IsSet<Parameters::LinearSolver>() && cprRequestedInDataFile) {
@@ -176,6 +177,12 @@ void FlowLinearSolverParameters::registerParameters()
          "cpr_quasiimpes, cpr_trueimpes and cpr_trueimpesanalytic). One step "
          "always follows the correction. System CPR, JSON configurations and "
          "the --accelerator-mode solvers do not use it");
+    Parameters::Register<Parameters::CprLocalWellSmoothing>
+        ("In the named CPR solver configurations (cpr, cprw, ...), update the residual in "
+         "the smoothing steps with an operator where wells distributed over several "
+         "processes only use their perforations on the own process. This avoids the "
+         "well communication in the preconditioner, at the cost of dropping the coupling "
+         "between the parts of such wells there. No effect without distributed wells");
     Parameters::Register<Parameters::AcceleratorMode>
         ("Choose a linear solver. Valid options are: cusparse, opencl, amgcl, "
          "rocalution, rocsparse, and none");
@@ -229,6 +236,7 @@ void FlowLinearSolverParameters::reset()
     cpr_reuse_setup_          = 4;
     cpr_reuse_interval_       = 30;
     cpr_pre_smooth_           = 0;
+    cpr_local_well_smoothing_ = false;
     accelerator_mode_         = "none";
     gpu_device_id_            = 0;
     opencl_platform_id_       = 0;

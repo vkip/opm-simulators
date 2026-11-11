@@ -64,6 +64,7 @@ namespace Opm {
 #include <opm/material/densead/Evaluation.hpp>
 
 #include <limits>
+#include <optional>
 #include <vector>
 
 namespace Opm
@@ -223,6 +224,16 @@ public:
 
     /// Ax = Ax - C D^-1 B x
     virtual void apply(const BVector& x, BVector& Ax) const = 0;
+
+    /// Two-phase version of apply(x, Ax): applyStart(x) computes the local B x and starts the
+    /// reduction for a distributed well, applyFinish(Ax) completes Ax = Ax - C D^-1 B x.
+    /// Other work, but no other operator application of this well, may be done in between.
+    virtual void applyStart(const BVector& x) const = 0;
+    virtual void applyFinish(BVector& Ax) const = 0;
+
+    /// Ax = Ax - C_k D^-1 B_k x, using only the perforations on this process (no
+    /// communication). Same as apply(x, Ax) for wells that are not distributed.
+    virtual void applyLocal(const BVector& x, BVector& Ax) const = 0;
 
     /// r = r - C D^-1 Rw
     virtual void apply(BVector& r) const = 0;
@@ -566,7 +577,59 @@ protected:
 
     //! \brief Temperature and salt concentration of the first perforated cell,
     //! broadcast so that all processes of a distributed well get the values.
+    //! \details For a distributed well the broadcast result is cached: for the lifetime
+    //! of the well object if the values cannot change (no thermal model, no brine),
+    //! otherwise while a FrozenReservoirScope is alive.
     FSInfo getFirstPerfCellConditions(const Simulator& simulator) const;
+
+    //! \brief Whether the first perforation cell conditions are constant in time.
+    static constexpr bool first_perf_conditions_constant =
+        (energyModuleType == EnergyModules::NoTemperature ||
+         energyModuleType == EnergyModules::ConstantTemperature) && !has_brine;
+
+    // Cache for the broadcast in getFirstPerfCellConditions(). A copy of the well starts
+    // with an empty cache, so a copy never uses values cached in another context.
+    struct FirstPerfCellCache
+    {
+        std::optional<FSInfo> value{};
+        int frozen_depth = 0;
+
+        FirstPerfCellCache() = default;
+        FirstPerfCellCache(const FirstPerfCellCache&) {}
+        FirstPerfCellCache& operator=(const FirstPerfCellCache&)
+        {
+            value.reset();
+            frozen_depth = 0;
+            return *this;
+        }
+    };
+
+    //! \brief Marks a scope where the reservoir state is fixed (e.g. the inner well
+    //! iterations), so getFirstPerfCellConditions() needs only one broadcast in it.
+    class FrozenReservoirScope
+    {
+    public:
+        explicit FrozenReservoirScope(const WellInterface& well)
+            : cache_(well.first_perf_cell_cache_)
+        {
+            ++cache_.frozen_depth;
+        }
+
+        ~FrozenReservoirScope()
+        {
+            if (--cache_.frozen_depth == 0 && !first_perf_conditions_constant) {
+                cache_.value.reset();
+            }
+        }
+
+        FrozenReservoirScope(const FrozenReservoirScope&) = delete;
+        FrozenReservoirScope& operator=(const FrozenReservoirScope&) = delete;
+
+    private:
+        FirstPerfCellCache& cache_;
+    };
+
+    mutable FirstPerfCellCache first_perf_cell_cache_;
 };
 
 } // namespace Opm

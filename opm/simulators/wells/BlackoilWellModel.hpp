@@ -619,6 +619,9 @@ template<class Scalar> class WellContributions;
             // A flag to tell the convergence report whether we need to take another newton step
             bool network_needs_more_balancing_force_another_newton_iteration_{false};
 
+            // Whether the warning about --matrix-add-well-contributions with distributed wells was issued
+            bool matrix_add_distributed_warned_{false};
+
             std::vector<Scalar> B_avg_{};
 
             const EquilGrid& equilGrid() const

@@ -26,6 +26,13 @@
 #include <dune/istl/bcrsmatrix.hh>
 #include <dune/common/dynmatrix.hh>
 
+#include <opm/simulators/utils/ParallelCommunication.hpp>
+
+#if HAVE_MPI
+#include <mpi.h>
+#endif
+
+#include <cstddef>
 #include <cstdint>
 
 namespace Opm {
@@ -37,6 +44,36 @@ enum class WellProducerCMode : std::uint16_t;
 enum class WellInjectorCMode : std::uint16_t;
 
 namespace wellhelpers {
+
+/// \brief A non-blocking, in-place sum over the processes sharing a distributed well.
+///
+/// Used to overlap the reduction of B x for distributed wells with other work
+/// (the reservoir part of the operator application). Copies never take over a
+/// pending reduction.
+template<typename Scalar>
+class NonBlockingWellSum
+{
+public:
+    NonBlockingWellSum() = default;
+    NonBlockingWellSum(const NonBlockingWellSum&) {}
+    NonBlockingWellSum& operator=(const NonBlockingWellSum&)
+    {
+        wait();
+        return *this;
+    }
+    ~NonBlockingWellSum() { wait(); }
+
+    //! \brief Start summing data[0..size) over comm. The data must not be accessed until wait().
+    void start(Scalar* data, std::size_t size, const Parallel::Communication& comm);
+
+    //! \brief Wait for the reduction started by start(), if any.
+    void wait();
+
+private:
+#if HAVE_MPI
+    MPI_Request request_ = MPI_REQUEST_NULL;
+#endif
+};
 
 /// \brief A wrapper around the B matrix for distributed wells
 ///

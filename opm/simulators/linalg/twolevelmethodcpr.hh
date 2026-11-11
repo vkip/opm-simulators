@@ -450,8 +450,20 @@ public:
   TwoLevelMethodCpr(const TwoLevelMethodCpr& other)
   : operator_(other.operator_), coarseSolver_(new CoarseLevelSolver(*other.coarseSolver_)),
     smoother_(other.smoother_), policy_(other.policy_->clone()),
-    preSteps_(other.preSteps_), postSteps_(other.postSteps_)
+    preSteps_(other.preSteps_), postSteps_(other.postSteps_),
+    smootherOperator_(other.smootherOperator_)
   {}
+
+  /**
+   * @brief Set the operator used to update the residual in the smoothing steps.
+   *
+   * By default the fine level operator is used. Any fixed linear operator gives a valid
+   * (fixed, linear) preconditioner, e.g. a cheaper approximation of the fine operator.
+   */
+  void setSmootherOperator(std::shared_ptr<const LinearOperator<FineDomainType, FineRangeType>> op)
+  {
+    smootherOperator_ = std::move(op);
+  }
 
   ~TwoLevelMethodCpr()
   {
@@ -516,7 +528,7 @@ public:
     context.update=&v;
     context.smoother=smoother_;
     context.rhs=&rhs_;
-    context.matrix=operator_;
+    context.matrix = smootherOperator_ ? smootherOperator_.get() : operator_;
     // Presmoothing
     presmooth(context, preSteps_);
     //Coarse grid correction
@@ -563,11 +575,9 @@ private:
     /** @parallel information */
     SequentialInformation* pinfo;
     /**
-     * @brief The matrix that we are solving.
-     *
-     * Needed to update the residual.
+     * @brief The operator used to update the residual in the smoothing steps.
      */
-    const FineOperatorType* matrix;
+    const LinearOperator<FineDomainType, FineRangeType>* matrix;
   };
   const FineOperatorType* operator_;
   /** @brief The coarse level solver. */
@@ -584,6 +594,8 @@ private:
   mutable FineDomainType u_;
   /** @brief Temporary vector for the right-hand side. */
   mutable FineRangeType rhs_;
+  /** @brief Operator for the residual updates in smoothing (null: use operator_). */
+  std::shared_ptr<const LinearOperator<FineDomainType, FineRangeType>> smootherOperator_;
 };
 }// end namespace Amg
 }// end namespace Dune

@@ -173,6 +173,18 @@ BOOST_AUTO_TEST_CASE(PreSmoothingFollowsCprPreSmooth)
     BOOST_CHECK_EQUAL(cprw.get<int>("preconditioner.post_smooth"), 1);
 }
 
+// CprLocalWellSmoothing reaches the CPR configurations, and is off by default.
+BOOST_AUTO_TEST_CASE(LocalWellSmoothingFollowsCprLocalWellSmoothing)
+{
+    Opm::FlowLinearSolverParameters p;
+    BOOST_CHECK_EQUAL(Opm::setupCPR("cpr_trueimpes", p).get<bool>("preconditioner.local_well_smoothing"), false);
+    BOOST_CHECK_EQUAL(Opm::setupCPRW("cprw", p).get<bool>("preconditioner.local_well_smoothing"), false);
+
+    p.cpr_local_well_smoothing_ = true;
+    BOOST_CHECK_EQUAL(Opm::setupCPR("cpr_trueimpes", p).get<bool>("preconditioner.local_well_smoothing"), true);
+    BOOST_CHECK_EQUAL(Opm::setupCPRW("cprw", p).get<bool>("preconditioner.local_well_smoothing"), true);
+}
+
 // CprPreSmooth reaches the solver parameters, and a negative value is rejected
 // instead of becoming a huge unsigned step count.
 BOOST_AUTO_TEST_CASE(CprPreSmoothIsReadAndValidated)

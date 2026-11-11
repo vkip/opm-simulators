@@ -142,6 +142,9 @@ namespace Opm {
 
         /// Ax = Ax - C D^-1 B x
         void apply(const BVector& x, BVector& Ax) const override;
+        void applyStart(const BVector& x) const override;
+        void applyFinish(BVector& Ax) const override;
+        void applyLocal(const BVector& x, BVector& Ax) const override;
         /// r = r - C D^-1 Rw
         void apply(BVector& r) const override;
 

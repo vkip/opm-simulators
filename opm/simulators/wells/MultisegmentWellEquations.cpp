@@ -43,9 +43,13 @@
 #include <opm/simulators/wells/MultisegmentWellGeneric.hpp>
 #include <opm/simulators/wells/WellInterfaceGeneric.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
+#include <limits>
 #include <numeric>
 #include <stdexcept>
+#include <vector>
 
 namespace Opm {
 
@@ -53,6 +57,7 @@ template<class Scalar, typename IndexTraits, int numWellEq, int numEq>
 MultisegmentWellEquations<Scalar, IndexTraits, numWellEq, numEq>::
 MultisegmentWellEquations(const MultisegmentWellGeneric<Scalar, IndexTraits>& well, const ParallelWellInfo<Scalar>& parallel_well_info)
     : well_(well)
+    , parallel_well_info_(parallel_well_info)
     , parallelB_(duneB_, parallel_well_info)
 {
 }
@@ -133,6 +138,15 @@ init(const int numPerfs,
 
     resWell_.resize(well_.numberOfSegments());
 
+    // The perforations of a segment are the same on all processes sharing the well
+    // (only their local indices differ), hence so is this list.
+    perforated_segments_.clear();
+    for (std::size_t seg = 0; seg < perforations.size(); ++seg) {
+        if (!perforations[seg].empty()) {
+            perforated_segments_.push_back(seg);
+        }
+    }
+
     // Store the global index of well perforated cells
     cells_ = cells;
 }
@@ -153,22 +167,64 @@ template<class Scalar, typename IndexTraits, int numWellEq, int numEq>
 void MultisegmentWellEquations<Scalar, IndexTraits, numWellEq, numEq>::
 apply(const BVector& x, BVector& Ax) const
 {
-    BVectorWell Bx(duneB_.N());
+    applyStart(x);
+    applyFinish(Ax);
+}
 
-    parallelB_.mv(x, Bx);
+template<class Scalar, typename IndexTraits, int numWellEq, int numEq>
+void MultisegmentWellEquations<Scalar, IndexTraits, numWellEq, numEq>::
+applyStart(const BVector& x) const
+{
+    Bx_.resize(duneB_.N());
+    // x.size() == 0 indicates that there are no active perforations on this process.
+    // Then all contributions come from the communication below.
+    if (x.size() > 0) {
+        duneB_.mv(x, Bx_);
+    } else {
+        Bx_ = 0.0;
+    }
+
+    const auto& comm = parallel_well_info_.communication();
+    if (comm.size() > 1 && Bx_.size() > 0) {
+        // Sum the contributions from all processes of the well, completed in applyFinish()
+        Bx_sum_.start(&Bx_[0][0], Bx_.size() * numWellEq, comm);
+    }
+}
+
+template<class Scalar, typename IndexTraits, int numWellEq, int numEq>
+void MultisegmentWellEquations<Scalar, IndexTraits, numWellEq, numEq>::
+applyFinish(BVector& Ax) const
+{
+    Bx_sum_.wait();
 
     // It is ok to do this on each process instead of only on one,
     // because the other processes would remain idle while waiting for
     // the single process to complete the computation.
     // invDBx = duneD^-1 * Bx_
     if constexpr (std::is_same_v<Scalar,double>) {
-        const BVectorWell invDBx = mswellhelpers::applyUMFPack(*duneDSolver_, Bx);
+        const BVectorWell invDBx = mswellhelpers::applyUMFPack(*duneDSolver_, Bx_);
         // Ax.size() == 0 indicates that there are no active perforations on this process.
         // Then, Ax does not need to be updated by the following calculation.
         if (Ax.size() > 0) {
             // Ax = Ax - duneC_^T * invDBx
             duneC_.mmtv(invDBx,Ax);
         }
+    }
+}
+
+template<class Scalar, typename IndexTraits, int numWellEq, int numEq>
+void MultisegmentWellEquations<Scalar, IndexTraits, numWellEq, numEq>::
+applyLocal(const BVector& x, BVector& Ax) const
+{
+    if constexpr (std::is_same_v<Scalar,double>) {
+        // Without local perforations C_k^T is empty, nothing to do.
+        if (Ax.size() == 0) {
+            return;
+        }
+        BVectorWell Bx(duneB_.N());
+        duneB_.mv(x, Bx);
+        const BVectorWell invDBx = mswellhelpers::applyUMFPack(*duneDSolver_, Bx);
+        duneC_.mmtv(invDBx, Ax);
     }
 }
 
@@ -407,6 +463,9 @@ extractCPRPressureMatrix(PressureMatrix& jacobian,
     if (!well.isPressureControlled(well_state)) {
         auto well_weight = weights[0];
         well_weight = 0.0;
+        // Sums of the pressure column of the B blocks, per equation
+        auto b_sum = weights[0];
+        b_sum = 0.0;
         int num_perfs = 0;
         for (std::size_t rowB = 0; rowB < duneB_.N(); ++rowB) {
             for (auto colB = duneB_[rowB].begin(),
@@ -416,11 +475,42 @@ extractCPRPressureMatrix(PressureMatrix& jacobian,
                 const auto& bw = weights[col_index];
                 well_weight += bw;
                 num_perfs += 1;
+                for (std::size_t i = 0; i < std::min<std::size_t>(b_sum.size(), numWellEq); ++i) {
+                    b_sum[i] += (*colB)[i][pressureVarIndex];
+                }
             }
         }
 
-        well_weight /= num_perfs;
-        assert(num_perfs > 0);
+        // For a distributed well, each process has a separate coarse well unknown, coupled
+        // only to its local perforations. Make these fragments consistent: use weights
+        // averaged over all perforations of the well, and scale a contracted diagonal
+        // (computed from the full D) by the fragment's share of the pressure coupling,
+        // i.e. its productivity fraction. One reduction per well and preconditioner setup.
+        Scalar local_fraction = 1.0;
+        const auto& comm = parallel_well_info_.communication();
+        if (comm.size() > 1) {
+            const std::size_t n = well_weight.size();
+            std::vector<Scalar> buffer(2 * n + 1);
+            for (std::size_t i = 0; i < n; ++i) {
+                buffer[i] = well_weight[i];
+                buffer[n + 1 + i] = b_sum[i];
+            }
+            buffer[n] = num_perfs;
+            comm.sum(buffer.data(), buffer.size());
+            Scalar s_local = 0.0;
+            Scalar s_global = 0.0;
+            for (std::size_t i = 0; i < n; ++i) {
+                well_weight[i] = buffer[i] / buffer[n];
+                s_local += well_weight[i] * b_sum[i];
+                s_global += well_weight[i] * buffer[n + 1 + i];
+            }
+            local_fraction = (std::abs(s_global) > std::numeric_limits<Scalar>::min())
+                ? s_local / s_global
+                : Scalar{1.0} / comm.size();
+        } else {
+            assert(num_perfs > 0);
+            well_weight /= num_perfs;
+        }
 
         // Add for coupling from reservoir to well and caclulate diag elelement corresping to incompressible standard well
         Scalar diag_ell = 0.0;
@@ -442,9 +532,14 @@ extractCPRPressureMatrix(PressureMatrix& jacobian,
         // Standard wells have always contracted D for the coarse diagonal;
         // only this path was left on the row sum.
         if (contract_d_diagonal) {
-            diag_ell = mswellhelpers::contractCprWellDiagonal(duneD_,
-                                                              well_weight,
-                                                              seg_pressure_var_ind);
+            diag_ell = local_fraction *
+                mswellhelpers::contractCprWellDiagonal(duneD_,
+                                                       well_weight,
+                                                       seg_pressure_var_ind);
+        }
+        if (num_perfs == 0) {
+            // No perforations of the (distributed) well on this process: decoupled unknown.
+            diag_ell = 1.0;
         }
 
 #define EXTRA_DEBUG_MSW 0
@@ -466,12 +561,44 @@ extractCPRPressureMatrix(PressureMatrix& jacobian,
 
 template<class Scalar, typename IndexTraits, int numWellEq, int numEq>
 void MultisegmentWellEquations<Scalar, IndexTraits, numWellEq, numEq>::
-sumDistributed(Parallel::Communication comm)
+sumDistributed(Parallel::Communication comm, std::span<Scalar> extra)
 {
-    // accumulate resWell_ and duneD_ in parallel to get effects of all perforations (might be distributed)
-    // we need to do this for all segments in the residual and on the diagonal of D
-    for (int seg = 0; seg < well_.numberOfSegments(); ++seg)
-        Opm::wellhelpers::sumDistributedWellEntries(duneD_[seg][seg], resWell_[seg], comm);
+    // Accumulate resWell_ and duneD_ in parallel to get effects of all perforations (might be
+    // distributed). When this is called, only the perforation terms have been assembled, and
+    // they only touch the diagonal block of D and the residual of the perforated segments.
+    // Pack these into one buffer to use a single collective instead of one per segment.
+    if (comm.size() == 1) {
+        return;
+    }
+    constexpr std::size_t seg_size = numWellEq * numWellEq + numWellEq;
+    sum_buffer_.resize(perforated_segments_.size() * seg_size + extra.size());
+    auto pos = sum_buffer_.begin();
+    for (const int seg : perforated_segments_) {
+        const auto& d = duneD_[seg][seg];
+        for (int i = 0; i < numWellEq; ++i) {
+            pos = std::copy(d[i].begin(), d[i].end(), pos);
+        }
+        pos = std::copy(resWell_[seg].begin(), resWell_[seg].end(), pos);
+    }
+    std::copy(extra.begin(), extra.end(), pos);
+
+    comm.sum(sum_buffer_.data(), sum_buffer_.size());
+
+    std::size_t k = 0;
+    for (const int seg : perforated_segments_) {
+        auto& d = duneD_[seg][seg];
+        for (int i = 0; i < numWellEq; ++i) {
+            for (int j = 0; j < numWellEq; ++j) {
+                d[i][j] = sum_buffer_[k++];
+            }
+        }
+        for (int i = 0; i < numWellEq; ++i) {
+            resWell_[seg][i] = sum_buffer_[k++];
+        }
+    }
+    for (auto& e : extra) {
+        e = sum_buffer_[k++];
+    }
 }
 
 #define INSTANTIATE(T, numWellEq, numEq)                                                       \

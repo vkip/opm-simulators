@@ -1462,6 +1462,42 @@ namespace Opm
         this->linSys_.apply(x, Ax);
     }
 
+    template<typename TypeTag>
+    void
+    StandardWell<TypeTag>::
+    applyStart(const BVector& x) const
+    {
+        if ((!this->isOperableAndSolvable() && !this->wellIsStopped()) ||
+            this->param_.matrix_add_well_contributions_) {
+            return;
+        }
+        this->linSys_.applyStart(x);
+    }
+
+    template<typename TypeTag>
+    void
+    StandardWell<TypeTag>::
+    applyFinish(BVector& Ax) const
+    {
+        if ((!this->isOperableAndSolvable() && !this->wellIsStopped()) ||
+            this->param_.matrix_add_well_contributions_) {
+            return;
+        }
+        this->linSys_.applyFinish(Ax);
+    }
+
+    template<typename TypeTag>
+    void
+    StandardWell<TypeTag>::
+    applyLocal(const BVector& x, BVector& Ax) const
+    {
+        if ((!this->isOperableAndSolvable() && !this->wellIsStopped()) ||
+            this->param_.matrix_add_well_contributions_) {
+            return;
+        }
+        this->linSys_.applyLocal(x, Ax);
+    }
+
 
 
 

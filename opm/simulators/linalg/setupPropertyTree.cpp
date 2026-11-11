@@ -394,6 +394,7 @@ setupCPRW(const std::string& /*conf*/, const FlowLinearSolverParameters& p)
     prm.put("preconditioner.weight_type", "trueimpes"s);
     prm.put("preconditioner.pre_smooth", p.cpr_pre_smooth_);
     prm.put("preconditioner.post_smooth", 1);
+    prm.put("preconditioner.local_well_smoothing", p.cpr_local_well_smoothing_ ? "true"s : "false"s);
     //prm.put("preconditioner.finesmoother.type", "paroverilu0"s);
     prm.put("preconditioner.finesmoother.type", (p.linsolver_ == "mixed-cprw")?"mixed-ilu0":"paroverilu0"s);
     prm.put("preconditioner.finesmoother.relaxation", 1.0);
@@ -426,6 +427,7 @@ setupCPR(const std::string& conf, const FlowLinearSolverParameters& p)
     }
     prm.put("preconditioner.pre_smooth", p.cpr_pre_smooth_);
     prm.put("preconditioner.post_smooth", 1);
+    prm.put("preconditioner.local_well_smoothing", p.cpr_local_well_smoothing_ ? "true"s : "false"s);
     // Choose finesmoother based on accelerator backend
     if (p.linear_solver_accelerator_ == Parameters::LinearSolverAcceleratorType::GPU) {
         // TODO: Set this to opmilu0 to match CPU setup once ILU0 performance matches DILU

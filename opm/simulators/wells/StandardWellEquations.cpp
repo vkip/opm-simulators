@@ -33,6 +33,7 @@
 #include <opm/simulators/linalg/istlsparsematrixadapter.hh>
 #include <opm/simulators/linalg/matrixblock.hh>
 #include <opm/simulators/linalg/SmallDenseMatrixUtils.hpp>
+#include <opm/simulators/wells/ParallelWellInfo.hpp>
 #include <opm/simulators/wells/WellInterfaceGeneric.hpp>
 
 #include <dune/common/fvector.hh>
@@ -40,6 +41,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <vector>
 
 namespace Opm
@@ -49,6 +51,7 @@ template<typename Scalar, typename IndexTraits, int numEq>
 StandardWellEquations<Scalar, IndexTraits, numEq>::
 StandardWellEquations(const ParallelWellInfo<Scalar>& parallel_well_info)
     : parallelB_(duneB_, parallel_well_info)
+    , parallel_well_info_(parallel_well_info)
 {
     invDuneD_.setBuildMode(DiagMatWell::row_wise);
 }
@@ -134,19 +137,67 @@ void StandardWellEquations<Scalar, IndexTraits, numEq>::clear()
 template<typename Scalar, typename IndexTraits, int numEq>
 void StandardWellEquations<Scalar, IndexTraits, numEq>::apply(const BVector& x, BVector& Ax) const
 {
-    assert(Bx_.size() == duneB_.N());
-    assert(invDrw_.size() == invDuneD_.N());
+    if (parallel_well_info_.communication().size() == 1) {
+        assert(Bx_.size() == duneB_.N());
+        assert(invDrw_.size() == invDuneD_.N());
 
-    // Bx_ = duneB_ * x
-    parallelB_.mv(x, Bx_);
+        // Bx_ = duneB_ * x
+        parallelB_.mv(x, Bx_);
+
+        // invDBx = invDuneD_ * Bx_
+        // TODO: with this, we modified the content of the invDrw_.
+        // Is it necessary to do this to save some memory?
+        auto& invDBx = invDrw_;
+        invDuneD_.mv(Bx_, invDBx);
+
+        // Ax = Ax - duneC_^T * invDBx
+        duneC_.mmtv(invDBx, Ax);
+    } else {
+        applyStart(x);
+        applyFinish(Ax);
+    }
+}
+
+template<typename Scalar, typename IndexTraits, int numEq>
+void StandardWellEquations<Scalar, IndexTraits, numEq>::applyStart(const BVector& x) const
+{
+    assert(Bx_.size() == duneB_.N());
+
+    // Bx_ = duneB_ * x (local perforations only)
+    duneB_.mv(x, Bx_);
+
+    const auto& comm = parallel_well_info_.communication();
+    if (comm.size() > 1) {
+        // Sum the contributions from all processes of the well, completed in applyFinish().
+        // The well has a single block row (see ParallelStandardWellB::mv).
+        assert(Bx_.size() == 1);
+        Bx_sum_.start(Bx_[0].container().data(), Bx_[0].size(), comm);
+    }
+}
+
+template<typename Scalar, typename IndexTraits, int numEq>
+void StandardWellEquations<Scalar, IndexTraits, numEq>::applyFinish(BVector& Ax) const
+{
+    assert(invDrw_.size() == invDuneD_.N());
+    Bx_sum_.wait();
 
     // invDBx = invDuneD_ * Bx_
-    // TODO: with this, we modified the content of the invDrw_.
-    // Is it necessary to do this to save some memory?
     auto& invDBx = invDrw_;
     invDuneD_.mv(Bx_, invDBx);
 
     // Ax = Ax - duneC_^T * invDBx
+    duneC_.mmtv(invDBx, Ax);
+}
+
+template<typename Scalar, typename IndexTraits, int numEq>
+void StandardWellEquations<Scalar, IndexTraits, numEq>::applyLocal(const BVector& x, BVector& Ax) const
+{
+    assert(Bx_.size() == duneB_.N());
+    assert(invDrw_.size() == invDuneD_.N());
+
+    duneB_.mv(x, Bx_);
+    auto& invDBx = invDrw_;
+    invDuneD_.mv(Bx_, invDBx);
     duneC_.mmtv(invDBx, Ax);
 }
 
@@ -360,6 +411,47 @@ extractCPRPressureMatrix(PressureMatrix& jacobian,
         cell_weights = 1.;
     }
 
+    // For a distributed well, each process has a separate coarse well unknown, coupled only to
+    // its local perforations. Make these fragments consistent (see the multisegment well): use
+    // the cell weights averaged over all perforations of the well, and scale the contracted
+    // diagonal (computed from the full D) by the fragment's share of the pressure coupling.
+    const auto& comm = parallel_well_info_.communication();
+    const bool distributed_fragment = comm.size() > 1 && !use_well_weights &&
+                                      !well.isPressureControlled(well_state);
+    Scalar local_fraction = 1.0;
+    if (distributed_fragment) {
+        const std::size_t n = cell_weights.size();
+        const std::size_t nb = std::min<std::size_t>(n, duneD_[0][0].N() - 1);
+        // Local sums of the pressure column of B for the conservation equations
+        std::vector<Scalar> b_sum(n, 0.0);
+        for (auto colB = duneB_[0].begin(), endB = duneB_[0].end(); colB != endB; ++colB) {
+            for (std::size_t i = 0; i < nb; ++i) {
+                b_sum[i] += (*colB)[i][pressureVarIndex];
+            }
+        }
+        std::vector<Scalar> buffer(2 * n + 1, 0.0);
+        for (std::size_t i = 0; i < n; ++i) {
+            buffer[i] = nperf > 0 ? cell_weights[i] * nperf : Scalar{0};
+            buffer[n + 1 + i] = b_sum[i];
+        }
+        buffer[n] = nperf;
+        comm.sum(buffer.data(), buffer.size());
+        if (nperf > 0 && buffer[n] > 0) {
+            Scalar s_local = 0.0;
+            Scalar s_global = 0.0;
+            for (std::size_t i = 0; i < n; ++i) {
+                cell_weights[i] = buffer[i] / buffer[n];
+                if (i < nb) {
+                    s_local += cell_weights[i] * b_sum[i];
+                    s_global += cell_weights[i] * buffer[n + 1 + i];
+                }
+            }
+            local_fraction = (std::abs(s_global) > std::numeric_limits<Scalar>::min())
+                ? s_local / s_global
+                : Scalar{1.0} / comm.size();
+        }
+    }
+
     BVectorWell  bweights(1);
     std::size_t blockSz = duneD_[0][0].N();
     bweights[0].resize(blockSz);
@@ -410,6 +502,9 @@ extractCPRPressureMatrix(PressureMatrix& jacobian,
             // conserved quantities correspond to those treated in the well model.
             for (std::size_t i = 0; i < blockSz - 1; ++i) {
                 diagElem += locmat[i][bhp_var_index] * cell_weights[i];
+            }
+            if (nperf > 0) {
+                diagElem *= local_fraction;
             }
 
         }

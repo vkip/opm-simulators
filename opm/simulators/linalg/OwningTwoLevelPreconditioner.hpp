@@ -23,6 +23,7 @@
 #include <opm/simulators/linalg/PreconditionerWithUpdate.hpp>
 #include <opm/simulators/linalg/PressureSolverPolicy.hpp>
 #include <opm/simulators/linalg/twolevelmethodcpr.hh>
+#include <opm/simulators/linalg/WellOperators.hpp>
 
 #include <opm/common/ErrorMacros.hpp>
 
@@ -103,6 +104,7 @@ public:
                            prm.get<int>("post_smooth", 1))
         , prm_(prm)
     {
+        setupSmootherOperator(prm);
         if (prm.get<int>("verbosity", 0) > 10) {
             std::string filename = prm.get<std::string>("weights_filename", "impes_weights.txt");
             std::ofstream outfile(filename);
@@ -137,6 +139,7 @@ public:
                            prm.get<int>("post_smooth", 1))
         , prm_(prm)
     {
+        setupSmootherOperator(prm);
         if (prm.get<int>("verbosity", 0) > 10 && comm.communicator().rank() == 0) {
             auto filename = prm.get<std::string>("weights_filename", "impes_weights.txt");
             std::ofstream outfile(filename);
@@ -193,6 +196,19 @@ private:
     {
         // Parallel case.
         twolevel_method_.updatePreconditioner(finesmoother_, coarseSolverPolicy_);
+    }
+
+    // With "local_well_smoothing", the residual updates of the smoothing steps apply
+    // distributed wells using only the local perforations, which needs no well
+    // communication (see Opm::LocalWellsOperatorView).
+    void setupSmootherOperator(const Opm::PropertyTree& prm)
+    {
+        if constexpr (Opm::HasLocalWellsApply<OperatorType>) {
+            if (prm.get<bool>("local_well_smoothing", false)) {
+                twolevel_method_.setSmootherOperator(
+                    std::make_shared<const Opm::LocalWellsOperatorView<OperatorType>>(linear_operator_));
+            }
+        }
     }
 
     void updateImpl(const Dune::Amg::SequentialInformation*)

@@ -441,6 +441,25 @@ namespace Opm {
             const Grid& grid = simulator_.vanguard().grid();
             this->wells_active_ = grid.comm().max(!this->well_container_.empty());
 
+            // Adding the well contributions to the matrix only includes the couplings between
+            // perforations on the same process, so the linear system is inexact for wells
+            // distributed over several processes.
+            if (this->param_.matrix_add_well_contributions_ && !this->matrix_add_distributed_warned_) {
+                const bool anyDistributed = grid.comm().max(
+                    std::ranges::any_of(this->well_container_, [](const auto& well)
+                                        { return well->parallelWellInfo().communication().size() > 1; }));
+                if (anyDistributed) {
+                    this->matrix_add_distributed_warned_ = true;
+                    if (grid.comm().rank() == 0) {
+                        OpmLog::warning("Option --matrix-add-well-contributions=true with wells distributed "
+                                        "over several processes: the couplings between perforations on "
+                                        "different processes are not included in the linear system, which "
+                                        "may slow down the nonlinear convergence. Consider "
+                                        "--matrix-add-well-contributions=false.");
+                    }
+                }
+            }
+
             // do the initialization for all the wells
             // TODO: to see whether we can postpone of the intialization of the well containers to
             // optimize the usage of the following several member variables

@@ -239,6 +239,42 @@ namespace Opm
         this->linSys_.apply(x, Ax);
     }
 
+    template <typename TypeTag>
+    void
+    MultisegmentWell<TypeTag>::
+    applyStart(const BVector& x) const
+    {
+        if ((!this->isOperableAndSolvable() && !this->wellIsStopped()) ||
+            this->param_.matrix_add_well_contributions_) {
+            return;
+        }
+        this->linSys_.applyStart(x);
+    }
+
+    template <typename TypeTag>
+    void
+    MultisegmentWell<TypeTag>::
+    applyFinish(BVector& Ax) const
+    {
+        if ((!this->isOperableAndSolvable() && !this->wellIsStopped()) ||
+            this->param_.matrix_add_well_contributions_) {
+            return;
+        }
+        this->linSys_.applyFinish(Ax);
+    }
+
+    template <typename TypeTag>
+    void
+    MultisegmentWell<TypeTag>::
+    applyLocal(const BVector& x, BVector& Ax) const
+    {
+        if ((!this->isOperableAndSolvable() && !this->wellIsStopped()) ||
+            this->param_.matrix_add_well_contributions_) {
+            return;
+        }
+        this->linSys_.applyLocal(x, Ax);
+    }
+
 
 
 
@@ -920,8 +956,10 @@ namespace Opm
                              const bool contract_d_diagonal,
                              const WellStateType& well_state) const
     {
-        if (this->number_of_local_perforations_ == 0) {
+        if (this->number_of_local_perforations_ == 0 &&
+            this->parallel_well_info_.communication().size() == 1) {
             // If there are no open perforations on this process, there are no contributions the cpr pressure matrix.
+            // A distributed well must still take part in the reduction in extractCPRPressureMatrix().
             return;
         }
         // Add the pressure contribution to the cpr system for the well
@@ -1572,6 +1610,9 @@ namespace Opm
     {
         if (!this->isOperableAndSolvable() && !this->wellIsStopped()) return true;
 
+        // The reservoir state is fixed during the inner iterations
+        const typename Base::FrozenReservoirScope frozen_reservoir(*this);
+
         auto& deferred_logger = groupStateHelper.deferredLogger();
 
         const int max_iter_number = this->param_.max_inner_iter_ms_wells_;
@@ -1703,6 +1744,9 @@ namespace Opm
                              const bool fixed_status /*false*/,
                              const bool solving_with_zero_rate /*false*/)
     {
+        // The reservoir state is fixed during the inner iterations
+        const typename Base::FrozenReservoirScope frozen_reservoir(*this);
+
         auto& deferred_logger = groupStateHelper.deferredLogger();
 
         const int max_iter_number = this->param_.max_inner_iter_ms_wells_;
@@ -1984,13 +2028,15 @@ namespace Opm
                 }
             }
         }
-        if constexpr (has_energy) {
-            ws.energy_rate = this->parallel_well_info_.communication().sum(ws.energy_rate);
-        }
-
         if (this->parallel_well_info_.communication().size() > 1) {
-            // accumulate resWell_ and duneD_ in parallel to get effects of all perforations (might be distributed)
-            this->linSys_.sumDistributed(this->parallel_well_info_.communication());
+            // accumulate resWell_ and duneD_ in parallel to get effects of all perforations (might be distributed),
+            // together with the energy rate in thermal runs
+            if constexpr (has_energy) {
+                this->linSys_.sumDistributed(this->parallel_well_info_.communication(),
+                                             std::span<Scalar>(&ws.energy_rate, 1));
+            } else {
+                this->linSys_.sumDistributed(this->parallel_well_info_.communication());
+            }
         }
 
         // Needed to construct the injector wellhead fluid state.

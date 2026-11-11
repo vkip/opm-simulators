@@ -33,6 +33,7 @@
 #include <dune/istl/paamg/smoother.hh>
 
 #include <cstddef>
+#include <type_traits>
 
 namespace Opm {
 
@@ -64,6 +65,35 @@ public:
                                           const bool contract_d_diagonal) const = 0;
     virtual void addWellPressureEquationsStruct(PressureMatrix& jacobian) const = 0;
     virtual int getNumberOfExtraEquations() const = 0;
+
+    //! \brief Two-phase application: applyStart(x) may start communication (for distributed
+    //! wells), and must be followed by applyFinish(x, y) (same result as apply(x, y)) or
+    //! applyscaleaddFinish(alpha, x, y) (same result as applyscaleadd(alpha, x, y)). Work not
+    //! involving this operator (e.g. the reservoir matrix product) may be done in between.
+    //! The default does everything in the finishing call.
+    virtual void applyStart(const X& /*x*/) const {}
+    virtual void applyFinish(const X& x, Y& y) const { this->apply(x, y); }
+    virtual void applyscaleaddFinish(field_type alpha, const X& x, Y& y) const
+    {
+        this->applyscaleadd(alpha, x, y);
+    }
+
+    //! \brief As applyscaleadd(), but distributed wells only use the perforations on this
+    //! process, so that no communication is needed. Intended for use in preconditioners.
+    //! The default is applyscaleadd().
+    virtual void applyscaleaddLocal(field_type alpha, const X& x, Y& y) const
+    {
+        this->applyscaleadd(alpha, x, y);
+    }
+};
+
+//! \brief Wells supporting the two-phase (and communication-free local) operator application.
+template<class Well, class V>
+concept TwoPhaseApplyWell = requires(const Well& well, const V& x, V& y)
+{
+    well.applyStart(x);
+    well.applyFinish(y);
+    well.applyLocal(x, y);
 };
 
 template <class WellModel, class X, class Y>
@@ -85,15 +115,58 @@ public:
     void apply(const X& x, Y& y) const override
     {
         OPM_TIMEBLOCK(apply);
-        for (const auto& well : this->wellMod_) {
-            this->applySingleWell(x, y, well, well->cells());
-        }
+        applyStart(x);
+        applyFinish(x, y);
     }
 
     //! apply operator to x, scale and add:  \f$ y = y + \alpha A(x) \f$
     void applyscaleadd(field_type alpha, const X& x, Y& y) const override
     {
         OPM_TIMEBLOCK(applyscaleadd);
+        applyStart(x);
+        applyscaleaddFinish(alpha, x, y);
+    }
+
+    //! Computes the local B x of all wells and starts the reductions for distributed wells,
+    //! so that they can proceed concurrently and overlap with other work.
+    void applyStart(const X& x) const override
+    {
+        OPM_TIMEBLOCK(applyStart);
+        for (const auto& well : this->wellMod_) {
+            if constexpr (TwoPhaseApplyWell<std::remove_cvref_t<decltype(*well)>, X>) {
+                const auto& cells = well->cells();
+                x_local_.resize(cells.size());
+                for (std::size_t i = 0; i < cells.size(); ++i) {
+                    x_local_[i] = x[cells[i]];
+                }
+                well->applyStart(x_local_);
+            }
+        }
+    }
+
+    void applyFinish(const X& x, Y& y) const override
+    {
+        OPM_TIMEBLOCK(applyFinish);
+        for (const auto& well : this->wellMod_) {
+            if constexpr (TwoPhaseApplyWell<std::remove_cvref_t<decltype(*well)>, X>) {
+                const auto& cells = well->cells();
+                Ax_local_.resize(cells.size());
+                for (std::size_t i = 0; i < cells.size(); ++i) {
+                    Ax_local_[i] = y[cells[i]];
+                }
+                well->applyFinish(Ax_local_);
+                for (std::size_t i = 0; i < cells.size(); ++i) {
+                    y[cells[i]] = Ax_local_[i];
+                }
+            } else {
+                this->applySingleWell(x, y, well, well->cells());
+            }
+        }
+    }
+
+    void applyscaleaddFinish(field_type alpha, const X& x, Y& y) const override
+    {
+        OPM_TIMEBLOCK(applyscaleaddFinish);
         if (this->wellMod_.empty()) {
             return;
         }
@@ -104,8 +177,41 @@ public:
 
         scaleAddRes_ = 0.0;
         // scaleAddRes_  = - C D^-1 B x
-        apply(x, scaleAddRes_);
+        applyFinish(x, scaleAddRes_);
         // Ax = Ax + alpha * scaleAddRes_
+        y.axpy(alpha, scaleAddRes_);
+    }
+
+    void applyscaleaddLocal(field_type alpha, const X& x, Y& y) const override
+    {
+        OPM_TIMEBLOCK(applyscaleaddLocal);
+        if (this->wellMod_.empty()) {
+            return;
+        }
+
+        if (scaleAddRes_.size() != y.size()) {
+            scaleAddRes_.resize(y.size());
+        }
+
+        scaleAddRes_ = 0.0;
+        for (const auto& well : this->wellMod_) {
+            const auto& cells = well->cells();
+            x_local_.resize(cells.size());
+            Ax_local_.resize(cells.size());
+            for (std::size_t i = 0; i < cells.size(); ++i) {
+                x_local_[i] = x[cells[i]];
+                Ax_local_[i] = 0.0;
+            }
+            // Ax_local = - C_k D^-1 B_k x_local
+            if constexpr (TwoPhaseApplyWell<std::remove_cvref_t<decltype(*well)>, X>) {
+                well->applyLocal(x_local_, Ax_local_);
+            } else {
+                well->apply(x_local_, Ax_local_);
+            }
+            for (std::size_t i = 0; i < cells.size(); ++i) {
+                scaleAddRes_[cells[i]] += Ax_local_[i];
+            }
+        }
         y.axpy(alpha, scaleAddRes_);
     }
 
@@ -197,6 +303,29 @@ public:
         }
     }
 
+    // Only the wells of the domain are applied, in one phase.
+    void applyStart(const X& /*x*/) const override {}
+
+    void applyFinish(const X& x, Y& y) const override
+    {
+        apply(x, y);
+    }
+
+    void applyscaleaddFinish(field_type alpha, const X& x, Y& y) const override
+    {
+        if (this->scaleAddRes_.size() != y.size()) {
+            this->scaleAddRes_.resize(y.size());
+        }
+        this->scaleAddRes_ = 0.0;
+        apply(x, this->scaleAddRes_);
+        y.axpy(alpha, this->scaleAddRes_);
+    }
+
+    void applyscaleaddLocal(field_type alpha, const X& x, Y& y) const override
+    {
+        this->applyscaleadd(alpha, x, y);
+    }
+
     void addWellPressureEquations(PressureMatrix& jacobian,
                                   const X& weights,
                                   const bool use_well_weights,
@@ -262,6 +391,13 @@ public:
 
       // add scaled well model modification to y
       wellOper_.applyscaleadd(alpha, x, y);
+    }
+
+    //! \brief As applyscaleadd(), but distributed wells only use local perforations.
+    void applyscaleaddLocalWells(field_type alpha, const X& x, Y& y) const
+    {
+      A_.usmv(alpha, x, y);
+      wellOper_.applyscaleaddLocal(alpha, x, y);
     }
 
     const matrix_type& getmat() const override { return A_; }
@@ -332,6 +468,9 @@ public:
     void apply(const X& x, Y& y) const override
     {
         OPM_TIMEBLOCK(apply);
+        // Start the well reductions first, so they overlap with the reservoir product
+        wellOper_.applyStart(x);
+
         for (auto row = A_.begin(); row.index() < interiorSize_; ++row)
         {
             y[row.index()]=0;
@@ -341,7 +480,7 @@ public:
         }
 
         // add well model modification to y
-        wellOper_.apply(x, y);
+        wellOper_.applyFinish(x, y);
 
         ghostLastProject(y);
     }
@@ -350,15 +489,24 @@ public:
     void applyscaleadd (field_type alpha, const X& x, Y& y) const override
     {
         OPM_TIMEBLOCK(applyscaleadd);
-        for (auto row = A_.begin(); row.index() < interiorSize_; ++row)
-        {
-            auto endc = (*row).end();
-            for (auto col = (*row).begin(); col != endc; ++col)
-                (*col).usmv(alpha, x[col.index()], y[row.index()]);
-        }
-        // add scaled well model modification to y
-        wellOper_.applyscaleadd(alpha, x, y);
+        // Start the well reductions first, so they overlap with the reservoir product
+        wellOper_.applyStart(x);
 
+        reservoirScaleAdd(alpha, x, y);
+
+        // add scaled well model modification to y
+        wellOper_.applyscaleaddFinish(alpha, x, y);
+
+        ghostLastProject(y);
+    }
+
+    //! \brief As applyscaleadd(), but distributed wells only use the perforations on this
+    //! process (no communication). Used for residual updates inside preconditioners.
+    void applyscaleaddLocalWells(field_type alpha, const X& x, Y& y) const
+    {
+        OPM_TIMEBLOCK(applyscaleaddLocalWells);
+        reservoirScaleAdd(alpha, x, y);
+        wellOper_.applyscaleaddLocal(alpha, x, y);
         ghostLastProject(y);
     }
 
@@ -387,6 +535,16 @@ public:
     }
 
 protected:
+    void reservoirScaleAdd(field_type alpha, const X& x, Y& y) const
+    {
+        for (auto row = A_.begin(); row.index() < interiorSize_; ++row)
+        {
+            auto endc = (*row).end();
+            for (auto col = (*row).begin(); col != endc; ++col)
+                (*col).usmv(alpha, x[col.index()], y[row.index()]);
+        }
+    }
+
     void ghostLastProject(Y& y) const
     {
         std::size_t end = y.size();
@@ -397,6 +555,57 @@ protected:
     const matrix_type& A_ ;
     const LinearOperatorExtra<X, Y>& wellOper_;
     std::size_t interiorSize_;
+};
+
+//! \brief Operators that can be applied with distributed wells using only local perforations.
+template<class FO>
+concept HasLocalWellsApply = requires(const FO& op,
+                                      typename FO::field_type alpha,
+                                      const typename FO::domain_type& x,
+                                      typename FO::range_type& y)
+{
+    op.applyscaleaddLocalWells(alpha, x, y);
+};
+
+/*!
+   \brief View of a well-aware operator where distributed wells are applied using only
+   the perforations on this process, i.e. with the rank-local Schur complement
+   \f$ A_k - C_k^T D^{-1} B_k \f$. It needs no well communication.
+
+   This is not the system operator, so it is only meant for use inside a (fixed, linear)
+   preconditioner, e.g. for the residual updates of the CPR smoothing steps.
+ */
+template<class FO>
+class LocalWellsOperatorView
+    : public Dune::LinearOperator<typename FO::domain_type, typename FO::range_type>
+{
+public:
+    using domain_type = typename FO::domain_type;
+    using range_type = typename FO::range_type;
+    using field_type = typename FO::field_type;
+
+    explicit LocalWellsOperatorView(const FO& op)
+        : op_(op)
+    {}
+
+    void apply(const domain_type& x, range_type& y) const override
+    {
+        y = 0;
+        op_.applyscaleaddLocalWells(field_type(1), x, y);
+    }
+
+    void applyscaleadd(field_type alpha, const domain_type& x, range_type& y) const override
+    {
+        op_.applyscaleaddLocalWells(alpha, x, y);
+    }
+
+    Dune::SolverCategory::Category category() const override
+    {
+        return op_.category();
+    }
+
+private:
+    const FO& op_;
 };
 
 /*!

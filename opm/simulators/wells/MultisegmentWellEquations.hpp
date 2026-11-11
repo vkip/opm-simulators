@@ -25,13 +25,16 @@
 #include <opm/simulators/utils/ParallelCommunication.hpp>
 #include <opm/simulators/wells/ParallelWellInfo.hpp>
 #include <opm/simulators/wells/MSWellHelpers.hpp>
+#include <opm/simulators/wells/WellHelpers.hpp>
 #include <dune/common/fmatrix.hh>
 #include <dune/common/fvector.hh>
 #include <dune/istl/bcrsmatrix.hh>
 #include <dune/istl/bvector.hh>
 
 #include <memory>
+#include <span>
 #include <type_traits>
+#include <vector>
 
 namespace Dune {
 template<class M> class UMFPack;
@@ -91,6 +94,18 @@ public:
     //! \brief Apply linear operator to vector.
     void apply(const BVector& x, BVector& Ax) const;
 
+    //! \brief Start applying the linear operator: computes the local B x and, for a
+    //!        distributed well, starts its (non-blocking) reduction.
+    //! \details Must be followed by applyFinish(), with no other operator application in between.
+    void applyStart(const BVector& x) const;
+
+    //! \brief Finish applying the linear operator: Ax = Ax - C^T D^-1 B x.
+    void applyFinish(BVector& Ax) const;
+
+    //! \brief Apply the linear operator using the perforations on this process only,
+    //!        i.e. Ax = Ax - C_k^T D^-1 B_k x. Needs no communication.
+    void applyLocal(const BVector& x, BVector& Ax) const;
+
     //! \brief Apply linear operator to vector.
     void apply(BVector& r) const;
 
@@ -128,7 +143,12 @@ public:
                                   const WellState<Scalar, IndexTraits>& well_state) const;
 
     //! \brief Sum with off-process contribution.
-    void sumDistributed(Parallel::Communication comm);
+    //! \details Only the perforation terms are summed, i.e. the diagonal blocks of D and the
+    //!          residual of the segments that have perforations. All of them, and the optional
+    //!          extra values, are reduced in a single collective operation.
+    //! \param comm Communicator of the processes sharing the well.
+    //! \param extra Additional values to sum over the processes (e.g. the energy rate).
+    void sumDistributed(Parallel::Communication comm, std::span<Scalar> extra = {});
 
     //! \brief Returns a const reference to the residual.
     const BVectorWell& residual() const
@@ -165,6 +185,18 @@ private:
 
     // Store the global index of well perforated cells
     std::vector<int> cells_;
+
+    // Segments with perforations (on any process), the only ones summed in sumDistributed
+    std::vector<int> perforated_segments_;
+
+    // Buffer for the packed reduction in sumDistributed
+    std::vector<Scalar> sum_buffer_;
+
+    // B x of the current operator application and its non-blocking reduction
+    mutable BVectorWell Bx_;
+    mutable wellhelpers::NonBlockingWellSum<Scalar> Bx_sum_;
+
+    const ParallelWellInfo<Scalar>& parallel_well_info_;
 
     // Wrapper for the parallel application of B for distributed wells
     mswellhelpers::ParallellMSWellB<OffDiagMatWell> parallelB_;

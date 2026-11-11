@@ -2650,6 +2650,13 @@ namespace Opm
     typename WellInterface<TypeTag>::FSInfo
     WellInterface<TypeTag>::getFirstPerfCellConditions(const Simulator& simulator) const
     {
+        const bool distributed = this->parallel_well_info_.communication().size() > 1;
+        // All processes of the well call this in the same sequence, so the cache state
+        // (and thereby the decision whether to broadcast) is the same on all of them.
+        if (distributed && first_perf_cell_cache_.value.has_value()) {
+            return *first_perf_cell_cache_.value;
+        }
+
         FSInfo info{};
 
         // If this process does not contain active perforations, this->well_cells_ is empty.
@@ -2665,12 +2672,18 @@ namespace Opm
             info.saltConcentration = getValue(fs.saltConcentration());
         }
 
+        if (!distributed) {
+            return info;
+        }
+
         // Broadcast from the process holding the first open connection of the well
         // (ParallelWellInfo::communicateFirstPerforation), so that all processes use the
         // conditions of the same cell.
-        return this->parallel_well_info_.communication().size() == 1
-            ? info
-            : this->parallel_well_info_.broadcastFirstPerforationValue(info);
+        info = this->parallel_well_info_.broadcastFirstPerforationValue(info);
+        if (first_perf_conditions_constant || first_perf_cell_cache_.frozen_depth > 0) {
+            first_perf_cell_cache_.value = info;
+        }
+        return info;
     }
 
 } // namespace Opm

@@ -81,6 +81,18 @@ public:
     //! \brief Apply linear operator to vector.
     void apply(const BVector& x, BVector& Ax) const;
 
+    //! \brief Start applying the linear operator: computes the local B x and, for a
+    //!        distributed well, starts its (non-blocking) reduction.
+    //! \details Must be followed by applyFinish(), with no other operator application in between.
+    void applyStart(const BVector& x) const;
+
+    //! \brief Finish applying the linear operator: Ax = Ax - C^T D^-1 B x.
+    void applyFinish(BVector& Ax) const;
+
+    //! \brief Apply the linear operator using the perforations on this process only,
+    //!        i.e. Ax = Ax - C_k^T D^-1 B_k x. Needs no communication.
+    void applyLocal(const BVector& x, BVector& Ax) const;
+
     //! \brief Apply linear operator to vector.
     void apply(BVector& r) const;
 
@@ -154,6 +166,10 @@ private:
     // several vector used in the matrix calculation
     mutable BVectorWell Bx_;
     mutable BVectorWell invDrw_;
+
+    // Non-blocking reduction of Bx_ for distributed wells
+    mutable wellhelpers::NonBlockingWellSum<Scalar> Bx_sum_;
+    const ParallelWellInfo<Scalar>& parallel_well_info_;
 
     // Store the global index of well perforated cells
     std::vector<int> cells_;

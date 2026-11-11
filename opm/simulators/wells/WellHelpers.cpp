@@ -33,6 +33,10 @@
 
 #include <dune/istl/bvector.hh>
 
+#if HAVE_MPI
+#include <dune/common/parallel/mpitraits.hh>
+#endif
+
 #include <fmt/format.h>
 
 #include <cstddef>
@@ -40,6 +44,32 @@
 
 namespace Opm {
 namespace wellhelpers {
+
+template<typename Scalar>
+void NonBlockingWellSum<Scalar>::
+start([[maybe_unused]] Scalar* data,
+      [[maybe_unused]] std::size_t size,
+      [[maybe_unused]] const Parallel::Communication& comm)
+{
+#if HAVE_MPI
+    wait();
+    if (comm.size() > 1 && size > 0) {
+        MPI_Iallreduce(MPI_IN_PLACE, data, static_cast<int>(size),
+                       Dune::MPITraits<Scalar>::getType(), MPI_SUM,
+                       static_cast<MPI_Comm>(comm), &request_);
+    }
+#endif
+}
+
+template<typename Scalar>
+void NonBlockingWellSum<Scalar>::wait()
+{
+#if HAVE_MPI
+    if (request_ != MPI_REQUEST_NULL) {
+        MPI_Wait(&request_, MPI_STATUS_IGNORE);
+    }
+#endif
+}
 
 template<typename Scalar>
 ParallelStandardWellB<Scalar>::
@@ -237,6 +267,7 @@ using Comm = Parallel::Communication;
                                             const Comm& comm);
 
 #define INSTANTIATE_TYPE(T)                                                     \
+    template class NonBlockingWellSum<T>;                                       \
     template class ParallelStandardWellB<T>;                                    \
     template void sumDistributedWellEntries(Dune::DynamicMatrix<T>& mat,        \
                                             Dune::DynamicVector<T>& vec,        \

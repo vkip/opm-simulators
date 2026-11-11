@@ -215,6 +215,8 @@ private:
         wellDMatrices_.clear();
         wellCells_.clear();
 
+        checkNoDistributedWells();
+
         this->simulator_.problem().wellModel().addBCDMatrix(
             wellBMatrices_, wellCMatrices_, wellDMatrices_, wellCells_);
 
@@ -262,6 +264,30 @@ private:
             sysMatrix_.D = &mergedD_;
             sysMatrix_.wellLayout = &wellLayout_;
             sysPrecond_->update();
+        }
+    }
+
+    // The system solver treats the well unknowns as local to each process. A well
+    // distributed over several processes is replicated on each of them with only the
+    // local part of B and C, so its unknowns would be counted several times in the
+    // global inner products and each copy would see only part of the coupling.
+    void checkNoDistributedWells() const
+    {
+        int anyDistributed = 0;
+        for (const auto& well : this->simulator_.problem().wellModel()) {
+            if (well->parallelWellInfo().communication().size() > 1) {
+                anyDistributed = 1;
+                break;
+            }
+        }
+#if HAVE_MPI
+        anyDistributed = this->comm_->communicator().max(anyDistributed);
+#endif
+        if (anyDistributed != 0) {
+            OPM_THROW(std::invalid_argument,
+                      "The system_cpr/system_cprw linear solvers do not support wells "
+                      "distributed over several processes. Use --linear-solver=cprw, or "
+                      "--allow-distributed-wells=false.");
         }
     }
 
