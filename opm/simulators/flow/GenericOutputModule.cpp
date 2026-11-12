@@ -168,7 +168,7 @@ GenericOutputModule(const EclipseState& eclState,
     , enableGeochemistry_(enableGeochemistry)
     , regionVars_ { std::make_unique<ParallelRegionsetVariableDescriptor>(comm),
                     std::make_unique<ParallelRegionVariableValues>(comm) }
-    , flowsC_(schedule, summaryConfig, isInterior)
+    , flowsC_(schedule, summaryConfig, isInterior, eclState.getIOConfig().getDumpFlux())
     , rftC_(eclState_, schedule_,
             [this](const std::string& wname) { return this->isOwnedByCurrentRank(wname); },
             [this](const std::string& wname) { return this->isOnCurrentRank(wname); })
@@ -187,6 +187,20 @@ GenericOutputModule(const EclipseState& eclState,
 template<class FluidSystem>
 GenericOutputModule<FluidSystem>::
 ~GenericOutputModule() = default;
+
+template<class FluidSystem>
+void GenericOutputModule<FluidSystem>::
+setupInterRegionFlowsOnLeaf_(const std::size_t numLeafCells)
+{
+    auto regions = std::vector<InterRegFlowMap::SingleRegion>{};
+    for (const auto& name : this->summaryConfig_.fip_regions_interreg_flow()) {
+        regions.push_back({ name, std::cref(this->regions_.at(name)) });
+    }
+
+    this->interRegionFlows_ = InterRegFlowMap {
+        numLeafCells, regions, declaredMaxRegionID(this->eclState_.runspec())
+    };
+}
 
 template<class FluidSystem>
 void GenericOutputModule<FluidSystem>::
@@ -1149,6 +1163,23 @@ updateSummaryRegionValues(const Inplace& inplace,
                                         true);
         }
 
+        if (this->summaryConfig_.hasKeyword("FPRFLUX")) {
+            // Same average as FPR, but over the whole of the original model.
+            // A reduced run adds the sums its parent recorded for the cells it
+            // does not have; everything else leaves them at zero, and FPRFLUX
+            // is then identical to FPR.
+            miscSummaryData["FPRFLUX"] =
+                detail::pressureAverage(inplace.get(Inplace::Phase::PressureHydroCarbonPV)
+                                        + this->externalRegionSums_[0],
+                                        inplace.get(Inplace::Phase::HydroCarbonPV)
+                                        + this->externalRegionSums_[6],
+                                        inplace.get(Inplace::Phase::PressurePV)
+                                        + this->externalRegionSums_[8],
+                                        inplace.get(Inplace::Phase::DynamicPoreVolume)
+                                        + this->externalRegionSums_[14],
+                                        true);
+        }
+
         if (this->summaryConfig_.hasKeyword("FPRP")) {
             miscSummaryData["FPRP"] =
                 detail::pressureAverage(inplace.get(Inplace::Phase::PressureHydroCarbonPV),
@@ -1203,8 +1234,10 @@ template<class FluidSystem>
 void GenericOutputModule<FluidSystem>::
 setupBlockData(std::function<bool(int)> isCartIdxOnThisRank)
 {
+    // LB* nodes name a cell of an LGR: setupLgrBlockData() allocates them.
     for (const auto& node : summaryConfig_) {
         if ((node.category() == SummaryConfigNode::Category::Block) &&
+            !node.lgr_name().has_value() &&
             isCartIdxOnThisRank(node.number() - 1))
         {
             this->blockData_.emplace(std::piecewise_construct,
@@ -1267,9 +1300,18 @@ setupExtraBlockData(const std::size_t        reportStepNum,
 {
     const auto& sched = this->schedule_[reportStepNum - 1];
 
+    std::size_t numLgrSkipped = 0;
     for (const auto& wname : sched.well_order()) {
         const auto& well = sched.wells.get(wname);
         for (const auto& connection : well.getConnections()) {
+            // COMPDATL/LGR connections carry an LGR-local global_index();
+            // keying it into the global-grid BPR namespace would read an
+            // unrelated coarse cell.  Skip them here (well report block
+            // pressures for LGR completions are not implemented).
+            if (connection.get_lgr_level() > 0) {
+                ++numLgrSkipped;
+                continue;
+            }
             if (isCartIdxOnThisRank(static_cast<int>(connection.global_index()))) {
                 this->extraBlockData_.emplace(std::piecewise_construct,
                                               std::forward_as_tuple("BPR",
@@ -1277,6 +1319,12 @@ setupExtraBlockData(const std::size_t        reportStepNum,
                                               std::forward_as_tuple(0.0));
             }
         }
+    }
+    if (numLgrSkipped > 0) {
+        OpmLog::warning("Skipping well-report block pressures (BPR) for "
+                        + std::to_string(numLgrSkipped)
+                        + " LGR-completed connection(s): block pressures for "
+                          "cells inside an LGR are not implemented.");
     }
 }
 

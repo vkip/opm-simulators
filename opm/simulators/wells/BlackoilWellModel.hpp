@@ -366,6 +366,15 @@ template<class Scalar> class WellContributions;
                 return simulator_.vanguard().compressedIndexForInterior(cartesian_cell_idx);
             }
 
+            int compressedIndexForConnection(const Connection& conn) const override
+            {
+                if constexpr (requires { simulator_.vanguard().compressedIndexForConnection(conn); }) {
+                    return simulator_.vanguard().compressedIndexForConnection(conn);
+                } else {
+                    return BlackoilWellModelGeneric<Scalar, IndexTraits>::compressedIndexForConnection(conn);
+                }
+            }
+
             int compressedIndexForInteriorLGR(const std::string& lgr_tag, const Connection& conn) const override
             {
                 return simulator_.vanguard().compressedIndexForInteriorLGR(lgr_tag, conn);
@@ -727,6 +736,10 @@ template<class Scalar> class WellContributions;
 
             void assignWellSpeciesRates_(data::Wells& wsrpt) const;
             void assignWellTracerRates_(data::Wells& wsrpt) const;
+
+            /// @brief Hand the rate converter the parent run's sums for the
+            ///   cells a sector run does not have, as of the current time.
+            void updateRateConverterExternalContribution_();
 
             /// @brief True when this process takes part in a *shared* (cross-rescoup)
             ///   network this sync step: a master with at least one master-group

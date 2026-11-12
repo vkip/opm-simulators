@@ -28,6 +28,9 @@
 
 #include <opm/simulators/utils/readDeck.hpp>
 
+#include <opm/models/utils/parametersystem.hpp>
+#include <opm/simulators/flow/FluxParameters.hpp>
+
 #include <opm/common/ErrorMacros.hpp>
 #include <opm/common/TimingMacros.hpp>
 #include <opm/common/OpmLog/EclipsePRTLog.hpp>
@@ -42,6 +45,10 @@
 #include <opm/io/eclipse/rst/state.hpp>
 
 #include <opm/input/eclipse/Deck/Deck.hpp>
+#include <opm/input/eclipse/Deck/DeckItem.hpp>
+#include <opm/input/eclipse/Deck/DeckKeyword.hpp>
+#include <opm/input/eclipse/Deck/DeckRecord.hpp>
+#include <opm/input/eclipse/Utility/Typetools.hpp>
 
 #include <opm/input/eclipse/EclipseState/checkDeck.hpp>
 #include <opm/input/eclipse/EclipseState/Grid/EclipseGrid.hpp>
@@ -76,8 +83,12 @@
 #include <opm/simulators/utils/ParallelSerialization.hpp>
 #include <opm/simulators/utils/PartiallySupportedFlowKeywords.hpp>
 #include <opm/simulators/utils/UnsupportedFlowKeywords.hpp>
+#include <opm/simulators/flow/flux/FluxActivation.hpp>
+#include <opm/simulators/flow/flux/FluxBoundary.hpp>
+#include <opm/simulators/flow/flux/FluxParentWells.hpp>
 
 #include <fmt/format.h>
+#include <fmt/ranges.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -108,6 +119,105 @@ namespace {
 
         Opm::OpmLog::getBackend<Opm::StreamLog>(stdout_log_id)
             ->setMessageLimiter(std::make_shared<Opm::MessageLimiter>(10, limits));
+    }
+
+    // In a sector run, FPR is the parent's field pressure at its own report
+    // steps (or covers the sector's cells only), while FPRFLUX averages over
+    // the whole parent model at every time step of this run. A UDQ or ACTIONX
+    // condition that reads FPR is to follow the field pressure as it develops
+    // in this run, as it did in the parent, so it reads FPRFLUX instead: an
+    // ACTIONX on FPR that fired in the parent between two of its report steps
+    // would otherwise never fire here. Returns what was changed, as UDQ
+    // quantities and ACTIONX names.
+    std::vector<std::string> readFprFluxInUdqAndActions(Opm::Deck& deck)
+    {
+        static const std::regex fpr { R"((^|[^A-Za-z0-9_])FPR(?![A-Za-z0-9_]))", std::regex::icase };
+
+        const auto substitute = [](Opm::DeckItem& item)
+        {
+            bool changed = false;
+            Opm::DeckItem updated(item.name(), Opm::RawString{});
+            for (const auto& value : std::as_const(item).getData<Opm::RawString>()) {
+                const auto replaced = std::regex_replace(value, fpr, "$1FPRFLUX");
+                changed = changed || (replaced != value);
+                updated.push_back(Opm::RawString { replaced });
+            }
+            if (changed) {
+                item = std::move(updated);
+            }
+            return changed;
+        };
+
+        std::vector<std::string> changed;
+        for (auto& keyword : deck) {
+            if (keyword.name() == "UDQ") {
+                for (std::size_t r = 0; r < keyword.size(); ++r) {
+                    auto& record = keyword.getRecord(r);
+                    auto& action = record.getItem("ACTION");
+                    if (!action.hasValue(0)) {
+                        continue;
+                    }
+                    std::string name = action.get<Opm::RawString>(0);
+                    name.erase(0, name.find_first_not_of(" \t'"));
+                    std::transform(name.begin(), name.end(), name.begin(),
+                                   [](unsigned char c) { return std::toupper(c); });
+                    if (name.rfind("DEFI", 0) != 0) {
+                        continue;
+                    }
+                    if (substitute(record.getItem("DATA"))) {
+                        changed.push_back("UDQ " + record.getItem("QUANTITY").getTrimmedString(0));
+                    }
+                }
+            }
+            else if (keyword.name() == "ACTIONX") {
+                bool conditionChanged = false;
+                for (std::size_t r = 1; r < keyword.size(); ++r) {
+                    conditionChanged = substitute(keyword.getRecord(r).getItem("CONDITION")) || conditionChanged;
+                }
+                if (conditionChanged) {
+                    changed.push_back("ACTIONX " + keyword.getRecord(0).getItem("NAME").getTrimmedString(0));
+                }
+            }
+        }
+        return changed;
+    }
+
+    // A sector cut out of the full model usually lists only its own wells. The
+    // FLUX file says what the others were, and they go into the schedule so
+    // that the group and field totals, the group controls and the UDQs count
+    // them as the parent did.
+    struct FluxParentWellSource
+    {
+        std::filesystem::path path;
+        Opm::EclIO::FluxFile::ParentWells wells;
+    };
+
+    FluxParentWellSource readFluxParentWells(const Opm::EclipseState& eclipseState)
+    {
+        const auto& ioConfig = eclipseState.getIOConfig();
+        auto path = Opm::FluxBoundary::selectInputPath(ioConfig.getInputDir(),
+                                                       ioConfig.getUseFluxBaseName());
+        if (!std::filesystem::exists(path)) {
+            // Reported, with the names tried, where the file is read in full.
+            return {};
+        }
+
+        auto wells = Opm::EclIO::FluxFile::readParentWells(path.string());
+        return { std::move(path), std::move(wells) };
+    }
+
+    void addFluxParentWells(const FluxParentWellSource& source,
+                            Opm::Schedule&              schedule,
+                            const Opm::ParseContext&    parseContext,
+                            Opm::ErrorGuard&            errorGuard)
+    {
+        const auto added = Opm::addFluxParentWells(schedule, source.wells, parseContext, errorGuard);
+        if (!added.empty()) {
+            Opm::OpmLog::info(fmt::format("USEFLUX: {} well(s) of the parent run are not in this "
+                                          "deck and have been added without connections, their "
+                                          "rates taken from '{}': {}",
+                                          added.size(), source.path.string(), fmt::join(added, " ")));
+        }
     }
 
     void loadObjectsFromRestart(const Opm::Deck&                     deck,
@@ -375,7 +485,7 @@ namespace {
         }
 
         auto parser = Opm::Parser { python };
-        const auto deck = readDeckFile(deckFilename, checkDeck,
+        auto deck = readDeckFile(deckFilename, checkDeck,
                                        parser, *parseContext,
                                        treatCriticalAsNonCritical,
                                        errorGuard);
@@ -392,15 +502,64 @@ namespace {
                                  "to make the intended method explicit.");
         }
 
+        // Reduce the active set to the selected USEFLUX region before the
+        // Schedule is created. The Schedule resolves well connections against
+        // the grid, so doing this afterwards would leave connections pointing
+        // at cells that no longer exist.
+        applyUseFluxActnum(*eclipseState);
+
+        if (eclipseState->getIOConfig().getUseFlux()
+            && Opm::Parameters::Get<Opm::Parameters::FluxFprAsFprflux>(/*errorIfNotRegistered*/ false))
+        {
+            if (const auto changed = readFprFluxInUdqAndActions(deck); !changed.empty()) {
+                std::string list;
+                for (const auto& item : changed) {
+                    list += (list.empty() ? "" : ", ") + item;
+                }
+                Opm::OpmLog::info(fmt::format("USEFLUX: FPR is evaluated as FPRFLUX, the field pressure "
+                                              "averaged over the whole parent model, in {} UDQ definition(s) "
+                                              "and ACTIONX condition(s) (--flux-fpr-as-fprflux=true): {}. The FPR "
+                                              "summary vector is still the parent's.", changed.size(), list));
+            }
+        }
+
         // A fracture model reads its seeds out of the deck during the run, not
         // only at setup, so a FRAC run has to retain the Schedule keywords
         // whatever the general setting says.  Decided here rather than by the
-        // caller because it needs the parsed RUNSPEC.
+        // caller because it needs the parsed RUNSPEC.  So does a USEFLUX run,
+        // which may have to insert the parent's wells, and inserting keywords
+        // replays the rest of the schedule.
         const auto keepScheduleKeywords =
-            keepKeywords || eclipseState->runspec().frac();
+            keepKeywords || eclipseState->runspec().frac()
+            || eclipseState->getIOConfig().getUseFlux();
+
+        // The parent's wells are added once the schedule exists, but a UDQ
+        // over one of them is checked where it is defined, when the well is
+        // not there yet. Only the check is relaxed: the definition is kept
+        // either way, and evaluated once the well is in. Likewise WELLDIMS,
+        // which the sector deck sized for its own wells and groups: the added
+        // ones are held to it only as a warning.
+        const auto addParentWells = (schedule == nullptr)
+            && eclipseState->getIOConfig().getUseFlux();
+        const auto fluxParentWells = addParentWells
+            ? readFluxParentWells(*eclipseState)
+            : FluxParentWellSource{};
+
+        auto scheduleContext = std::optional<Opm::ParseContext>{};
+        if (!fluxParentWells.wells.empty() && (parseContext != nullptr)) {
+            scheduleContext.emplace(*parseContext);
+            for (const auto& key : { Opm::ParseContext::UDQ_DEFINE_CANNOT_EVAL,
+                                     Opm::ParseContext::RUNSPEC_NUMWELLS_TOO_LARGE,
+                                     Opm::ParseContext::RUNSPEC_NUMGROUPS_TOO_LARGE,
+                                     Opm::ParseContext::RUNSPEC_GROUPSIZE_TOO_LARGE })
+            {
+                scheduleContext->update(key, Opm::InputErrorAction::WARN);
+            }
+        }
+        const auto* schedParseContext = scheduleContext.has_value() ? &*scheduleContext : parseContext;
 
         if (eclipseState->getInitConfig().restartRequested()) {
-            loadObjectsFromRestart(deck, parser, *parseContext,
+            loadObjectsFromRestart(deck, parser, *schedParseContext,
                                    initFromRestart, outputInterval,
                                    lowActionParsingStrictness, keepScheduleKeywords,
                                    *eclipseState, std::move(python),
@@ -408,7 +567,7 @@ namespace {
                                    errorGuard);
         }
         else {
-            createNonRestartDynamicObjects(deck, *eclipseState, *parseContext,
+            createNonRestartDynamicObjects(deck, *eclipseState, *schedParseContext,
                                            lowActionParsingStrictness, keepScheduleKeywords,
                                            std::move(python),
                                            schedule, udqState, actionState, wtestState,
@@ -418,6 +577,10 @@ namespace {
         checkScheduleKeywordConsistency(*schedule);
         checkSatelliteGroupParentControls(*schedule);
         eclipseState->appendAqufluxSchedule(schedule->getAquiferFluxSchedule());
+
+        if (!fluxParentWells.wells.empty()) {
+            addFluxParentWells(fluxParentWells, *schedule, *schedParseContext, errorGuard);
+        }
 
         if (Opm::OpmLog::hasBackend("STDOUT_LOGGER")) {
             // loggers might not be set up!
@@ -453,8 +616,17 @@ namespace {
                  std::move(lgrGridDims));
         }
 
+        if (eclipseState->getIOConfig().getUseFlux()) {
+            // A sector run's FPR covers its own cells only. FPRFLUX is the
+            // same average taken over the whole of the model the sector came
+            // from, which is what the wells see when a reservoir-volume target
+            // is converted. It is always present, because a sector run cannot
+            // report a field average any other way.
+            summaryConfig->addFieldKeyword("FPRFLUX");
+        }
+
         Opm::checkConsistentArrayDimensions(*eclipseState, *schedule,
-                                            *parseContext, errorGuard);
+                                            *schedParseContext, errorGuard);
     }
 
 #if HAVE_MPI
@@ -831,6 +1003,8 @@ void Opm::readDeck(Opm::Parallel::Communication    comm,
                          summaryConfig, std::move(python), initFromRestart,
                          checkDeck, treatCriticalAsNonCritical, lowActionParsingStrictness,
                          keepKeywords, outputInterval, *errorGuard, slaveMode);
+
+            assert(eclipseState);
 
             // Update schedule so that re-parsing after actions use same strictness
             assert(schedule);

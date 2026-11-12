@@ -127,6 +127,13 @@ list (APPEND MAIN_SOURCE_FILES
   opm/simulators/flow/GenericTemperatureModel.cpp
   opm/simulators/flow/GenericThresholdPressure.cpp
   opm/simulators/flow/GenericTracerModel.cpp
+  opm/simulators/flow/flux/FluxActivation.cpp
+  opm/simulators/flow/flux/FluxBoundary.cpp
+  opm/simulators/flow/flux/FluxParentWells.cpp
+  opm/simulators/flow/flux/FluxDumper.cpp
+  opm/simulators/flow/flux/FluxRegions.cpp
+  opm/simulators/flow/flux/FluxSummaryKeys.cpp
+  opm/simulators/flow/flux/ParentSummary.cpp
   opm/simulators/flow/HybridNewtonConfig.cpp
   opm/simulators/flow/InterRegFlows.cpp
   opm/simulators/flow/KeywordValidation.cpp
@@ -520,6 +527,11 @@ list (APPEND TEST_SOURCE_FILES
   tests/test_glift1.cpp
   tests/test_graphcoloring.cpp
   tests/test_GroupState.cpp
+  tests/test_FluxActivation.cpp
+  tests/test_FluxBoundary.cpp
+  tests/test_FluxDumper.cpp
+  tests/test_FluxRegions.cpp
+  tests/test_ParentSummary.cpp
   tests/test_ignore_keywords.cpp
   tests/test_InjectedPhase.cpp
   tests/test_injection_topup_phase_validation.cpp
@@ -529,6 +541,10 @@ list (APPEND TEST_SOURCE_FILES
   tests/test_keyword_validator.cpp
   tests/test_LgrBlockData.cpp
   tests/test_LgrTransIndex.cpp
+  tests/test_lgr_block_data.cpp
+  tests/test_lgr_sealed_fault_ranks.cpp
+  tests/test_lgr_well_ranks.cpp
+  tests/test_lgr_zero_cells.cpp
   tests/test_linearleastsquares.cpp
   tests/test_LogOutputHelper.cpp
   tests/test_milu.cpp
@@ -733,6 +749,7 @@ list (APPEND TEST_DATA_FILES
   tests/VFPPROD1
   tests/VFPPROD2
   tests/msw.data
+  tests/LGR_RESTART_UNREFINED.DATA
   tests/TESTTIMER.DATA
   tests/TESTWELLMODEL.DATA
   tests/liveoil.DATA
@@ -1122,6 +1139,7 @@ list (APPEND PUBLIC_HEADER_FILES
   opm/simulators/flow/FlowGenericProblem.hpp
   opm/simulators/flow/FlowGenericProblem_impl.hpp
   opm/simulators/flow/FlowGenericVanguard.hpp
+  opm/simulators/flow/FluxParameters.hpp
   opm/simulators/flow/FlowMain.hpp
   opm/simulators/flow/FlowProblem.hpp
   opm/simulators/flow/FlowProblemBlackoil.hpp
@@ -1160,6 +1178,13 @@ list (APPEND PUBLIC_HEADER_FILES
   opm/simulators/flow/OutputBlackoilModule.hpp
   opm/simulators/flow/OutputCompositionalModule.hpp
   opm/simulators/flow/OutputExtractor.hpp
+  opm/simulators/flow/flux/FluxDumper.hpp
+  opm/simulators/flow/flux/FluxSummaryKeys.hpp
+  opm/simulators/flow/flux/FluxRegions.hpp
+  opm/simulators/flow/flux/FluxActivation.hpp
+  opm/simulators/flow/flux/FluxBoundary.hpp
+  opm/simulators/flow/flux/FluxParentWells.hpp
+  opm/simulators/flow/flux/ParentSummary.hpp
   opm/simulators/flow/partitionCells.hpp
   opm/simulators/flow/PolyhedralGridVanguard.hpp
   opm/simulators/flow/priVarsPacking.hpp
@@ -1536,6 +1561,7 @@ list (APPEND EXAMPLE_SOURCE_FILES
   examples/diffusion_pvs.cpp
   examples/groundwater_immiscible.cpp
   examples/infiltration_pvs.cpp
+  examples/inspect_flux.cpp
   examples/lens_immiscible_ecfv_ad.cpp
   examples/lens_immiscible_ecfv_ad_23.cpp
   examples/lens_immiscible_ecfv_ad_trans.cpp
@@ -1543,6 +1569,7 @@ list (APPEND EXAMPLE_SOURCE_FILES
   examples/lens_immiscible_vcfv_fd.cpp
   examples/lens_richards_ecfv.cpp
   examples/lens_richards_vcfv.cpp
+  examples/make_flux.cpp
   examples/obstacle_immiscible.cpp
   examples/obstacle_ncp.cpp
   examples/obstacle_pvs.cpp

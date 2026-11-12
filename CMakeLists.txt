@@ -460,6 +460,7 @@ endmacro()
 
 macro(opm-simulators_tests_hook)
   include(${CMAKE_CURRENT_SOURCE_DIR}/modelTests.cmake)
+  include(${CMAKE_CURRENT_SOURCE_DIR}/fluxTests.cmake)
 
   # Look for the opm-tests repository; if found the variable
   # HAVE_OPM_TESTS will be set to true.
@@ -641,6 +642,19 @@ macro(opm-simulators_tests_hook)
           -f drsdt_initial_rs
           -r ${PROJECT_BINARY_DIR}/tests/results/drsdt_initial_rs
     )
+
+    # MINPV removes every host cell of the only LGR, so the trilinear
+    # refinement refines nothing: the run must still write its restart file.
+    add_test(
+      NAME
+        lgr_restart_unrefined
+      COMMAND
+        $<TARGET_FILE:${drsdt_simulator}>
+          ${PROJECT_SOURCE_DIR}/tests/LGR_RESTART_UNREFINED.DATA
+          --output-dir=${PROJECT_BINARY_DIR}/tests/results/lgr_restart_unrefined
+          --parsing-strictness=low
+          --lgr-backend=trilinear
+    )
   endif()
 
   if("3" IN_LIST OPM_COMPILE_COMPONENTS)
@@ -783,6 +797,10 @@ macro(opm-simulators_targets_hook)
   target_sources(test_compwell_pvt_region PRIVATE $<TARGET_OBJECTS:moduleVersion>)
   target_sources(test_compwell_schedule_stop PRIVATE $<TARGET_OBJECTS:moduleVersion>)
   target_sources(test_compwell_zero_rate_targets PRIVATE $<TARGET_OBJECTS:moduleVersion>)
+  target_sources(test_lgr_block_data PRIVATE $<TARGET_OBJECTS:moduleVersion>)
+  target_sources(test_lgr_sealed_fault_ranks PRIVATE $<TARGET_OBJECTS:moduleVersion>)
+  target_sources(test_lgr_well_ranks PRIVATE $<TARGET_OBJECTS:moduleVersion>)
+  target_sources(test_lgr_zero_cells PRIVATE $<TARGET_OBJECTS:moduleVersion>)
   if(MPI_FOUND)
     target_sources(test_chopstep PRIVATE $<TARGET_OBJECTS:moduleVersion>)
     target_sources(test_rescoup_constraints PRIVATE $<TARGET_OBJECTS:moduleVersion>)
@@ -1178,3 +1196,21 @@ include (OpmInit)
 
 # all setup common to the OPM library modules is done here
 include (OpmLibMain)
+
+# The sector modelling guide is built on request only, since it needs pandoc
+# and, for the PDF, a LaTeX engine.
+find_program(PANDOC_EXECUTABLE pandoc)
+find_program(PDF_ENGINE_EXECUTABLE NAMES xelatex lualatex pdflatex)
+if(PANDOC_EXECUTABLE)
+  set(_sector_pdf_engine "${PDF_ENGINE_EXECUTABLE}")
+  if(NOT PDF_ENGINE_EXECUTABLE)
+    set(_sector_pdf_engine "none")
+  endif()
+  add_custom_target(sector_docs
+    COMMAND ${CMAKE_COMMAND} -E env
+            "PANDOC=${PANDOC_EXECUTABLE}" "PDF_ENGINE=${_sector_pdf_engine}"
+            bash ${PROJECT_SOURCE_DIR}/doc/sector/build-docs.sh
+            ${PROJECT_BINARY_DIR}/doc/sector
+    COMMENT "Building the sector modelling guide in ${PROJECT_BINARY_DIR}/doc/sector"
+    VERBATIM)
+endif()

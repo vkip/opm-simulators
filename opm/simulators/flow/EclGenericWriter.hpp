@@ -30,6 +30,8 @@
 
 #include <opm/models/parallel/tasklets.hpp>
 
+#include <opm/input/eclipse/EclipseState/Grid/FIPRegionStatistics.hpp>
+
 #include <opm/output/data/Groups.hpp>
 
 #include <opm/simulators/flow/CollectDataOnIORank.hpp>
@@ -38,6 +40,7 @@
 #include <opm/simulators/timestepping/SimulatorReport.hpp>
 
 #include <array>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -89,7 +92,12 @@ public:
                      const Dune::CartesianIndexMapper<Grid>& cartMapper,
                      const Dune::CartesianIndexMapper<EquilGrid>* equilCartMapper,
                      bool enableAsyncOutput,
-                     bool enableEsmry);
+                     bool enableEsmry,
+                     // I/O-rank reference grid for the cell-data gather.  Differs
+                     // from equilGrid only for a parallel run with LGRs, where it
+                     // is the refined output grid; null falls back to equilGrid.
+                     const EquilGrid* collectGrid = nullptr,
+                     const Dune::CartesianIndexMapper<EquilGrid>* collectCartMapper = nullptr);
 
     const EclipseIO& eclIO() const;
 
@@ -103,7 +111,8 @@ public:
     // Parallel LGR INIT output: connection transmissibilities gathered from the
     // ranks' own (distributed) simulator transmissibilities. When set,
     // computeTrans_ / exportNncStructure_ take values from these instead of
-    // querying a whole-grid transmissibility object. Complete on the I/O rank only.
+    // querying a whole-grid transmissibility object, which is then only asked
+    // about connections that no rank records. Complete on the I/O rank only.
     void setGatheredLgrTrans(std::optional<GatheredLgrOutputTrans> gatheredTrans)
     {
         gatheredLgrTrans_ = std::move(gatheredTrans);
@@ -141,13 +150,17 @@ protected:
     const double* findGatheredTrans_(const std::array<int,N>& key) const;
 
     // Output transmissibility value for a connection: from the gathered per-rank
-    // simulator transmissibilities when set (parallel LGR runs; a missing key is
-    // a hard error), otherwise from the whole-grid transmissibility object
-    // (c1, c2). Key shape as in findGatheredTrans_.
+    // simulator transmissibilities when set (parallel LGR runs), otherwise from
+    // the whole-grid transmissibility object (c1, c2). In parallel LGR runs a
+    // missing key is zero when the level-zero face between the two origin cells
+    // has zero transmissibility, and a hard error otherwise. Key shape as in
+    // findGatheredTrans_.
     template <std::size_t N>
     double gatheredOrGlobalTrans_(const std::array<int,N>& key,
                                   unsigned c1,
-                                  unsigned c2) const;
+                                  unsigned c2,
+                                  unsigned originIn,
+                                  unsigned originOut) const;
 
     void doWriteOutput(const int                          reportStepNum,
                        const std::optional<int>           timeStepNum,
@@ -187,7 +200,8 @@ protected:
                      const InterRegFlowMap&                               interRegFlows,
                      SummaryState&                                        summaryState,
                      UDQState&                                            udqState,
-                     const data::ReservoirCouplingGroupRates*             rcGroupRates = nullptr);
+                     const data::ReservoirCouplingGroupRates*             rcGroupRates = nullptr,
+                     const std::function<void(SummaryState&)>&            beforeUdqEval = {});
 
     CollectDataOnIORankType collectOnIORank_;
     const Grid& grid_;
@@ -199,9 +213,19 @@ protected:
     Scalar restartTimeStepSize_;
     const TransmissibilityType* globalTrans_ = nullptr;
     std::optional<GatheredLgrOutputTrans> gatheredLgrTrans_;
+
+    //! \brief Region sets and IDs the UDQs may refer to, when they are more
+    //!        than the model's own: a sector's UDQs refer to the regions of
+    //!        the model it was cut out of.
+    std::optional<FIPRegionStatistics> udqRegionStatistics_;
     const Dune::CartesianIndexMapper<Grid>& cartMapper_;
     const Dune::CartesianIndexMapper<EquilGrid>* equilCartMapper_;
+    // Mapper of collectGrid_; equals equilCartMapper_ outside a parallel LGR run.
+    const Dune::CartesianIndexMapper<EquilGrid>* collectCartMapper_;
     const EquilGrid* equilGrid_;
+    // Refined I/O-rank reference grid used to gather and split cell data in a
+    // parallel LGR run; equals equilGrid_ otherwise.
+    const EquilGrid* collectGrid_;
     SimulatorReportSingle sub_step_report_;
     SimulatorReport simulation_report_;
 

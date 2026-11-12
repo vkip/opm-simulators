@@ -73,6 +73,30 @@ struct UseHybridNewton { static constexpr bool value = false; };
 // Conserve inner energy instead of enthalpy even if THERMAL is used
 struct ConserveInnerEnergyThermal { static constexpr bool value = false; };
 
+// Minimum time, in DAYS, between consecutive parent summary samples written to
+// the .FLUX file by a DUMPFLUX run.  Every time step is sampled unless doing so
+// would place the sample within this interval of the previous one; report step
+// boundaries are always sampled.  Zero samples every time step.
+template<class Scalar>
+struct FluxSummaryMinIntervalBetweenSamples { static constexpr Scalar value = 1.0; };
+
+// Minimum time, in DAYS, between consecutive sector boundary records written to
+// the .FLUX file by a DUMPFLUX run.  Every time step is written unless doing so
+// would place the record within this interval of the previous one; report step
+// boundaries are always written.  Zero writes every time step.
+template<class Scalar>
+struct FluxBoundaryMinIntervalBetweenSamples { static constexpr Scalar value = 1.0; };
+
+// Write sector boundary data once per report step rather than per time step.
+// This is the behaviour of earlier versions and is generally less accurate for
+// models whose boundary flow varies within a report step.
+struct FluxBoundaryReportStepsOnly { static constexpr bool value = false; };
+
+// Interpolate a USEFLUX run's pressure-mode boundary state linearly in time
+// between consecutive records, rather than holding each record's state over
+// the whole interval it covers.
+struct FluxBoundaryInterpolate { static constexpr bool value = true; };
+
 } // namespace Opm::Parameters
 
 namespace Opm {
