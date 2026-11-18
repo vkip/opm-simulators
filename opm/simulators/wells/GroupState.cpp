@@ -110,7 +110,7 @@ bool GroupState<Scalar>::has_network_leaf_node_injection_rates(const std::string
 
 template<class Scalar>
 void GroupState<Scalar>::update_network_leaf_node_injection_rates(const std::string& gname,
-                                                 const std::vector<Scalar>& rates)
+                                                                  const std::vector<Scalar>& rates)
 {
     if (rates.size() != this->num_phases)
         throw std::logic_error("Wrong number of phases");

@@ -23,6 +23,7 @@
 #define BOOST_TEST_MODULE NetworkPressureTests
 
 #include <opm/simulators/wells/BlackoilWellModelNetworkPressureComputation.hpp>
+#include <opm/simulators/wells/network/NetworkNodePressureUpdater.hpp>
 
 #include <opm/common/utility/platform_dependent/disable_warnings.h>
 #include <boost/test/unit_test.hpp>
@@ -54,6 +55,7 @@ struct MPIFixture
 BOOST_GLOBAL_FIXTURE(MPIFixture);
 
 #include <opm/input/eclipse/Deck/Deck.hpp>
+#include <opm/input/eclipse/EclipseState/Phase.hpp>
 
 #include <opm/common/utility/TimeService.hpp>
 
@@ -81,6 +83,7 @@ BOOST_GLOBAL_FIXTURE(MPIFixture);
 #include <limits>
 #include <map>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <optional>
 #include <stdexcept>
@@ -268,7 +271,8 @@ struct MockWellModel
         struct MockGroupState
         {
             // Leaf rates in Sm3/day, phase order water, oil, gas. Tests may override
-            // these before running the computation.
+            // these before running the computation. Injection leaf rates are per network
+            // phase: the gas network sees only the gas rate, the water network only water.
             static inline std::vector<double> injection_rates_sm3_day {500.0, 0.0, 5000.0};
             static inline std::vector<double> production_rates_sm3_day {500.0, 500.0, 5000.0};
 
@@ -280,8 +284,10 @@ struct MockWellModel
             }
 
             bool has_production_rates(const std::string) const { return true; }
-            bool has_network_leaf_node_injection_rates(const std::string) const { return true; }
             bool has_network_leaf_node_production_rates(const std::string) const { return true; }
+            // Every phase's injection rate at the leaf; the VFP table picks the one
+            // its FLO type names, so it is not masked per network here.
+            bool has_network_leaf_node_injection_rates(const std::string) const { return true; }
             std::vector<double> network_leaf_node_injection_rates(const std::string) const
             {
                 return toSI(injection_rates_sm3_day);
@@ -810,8 +816,7 @@ BOOST_AUTO_TEST_CASE(production_gas_consumption_at_unknown_node_is_ignored)
 
 BOOST_AUTO_TEST_SUITE_END() // NetworkPressureComputationTests
 
-// ===========================================================================
-
+// ====================================================================
 BOOST_AUTO_TEST_SUITE(NetworkGasConsumptionRates)
 
 namespace {
@@ -948,3 +953,133 @@ TSTEP
 }
 
 BOOST_AUTO_TEST_SUITE_END() // NetworkGasConsumptionRates
+BOOST_AUTO_TEST_SUITE(NodePressureUpdaterTests)
+
+namespace {
+    // A synthetic well/network response modelled on the GNETINJE gas case: the wells are on
+    // group control (constant rate) while the applied leaf pressure is above their THP,
+    // then on THP control with a very steep rate response, then rate-limited. The network
+    // pressure falls linearly with the leaf rate.
+    struct StiffResponse
+    {
+        double q_group = 800e3;      // group-controlled rate  [sm3/d]
+        double q_max = 2000e3;       // WCONINJE rate limit
+        double thp_switch = 210.0;   // wells go to THP control below this leaf pressure [bar]
+        double dq_dthp = 60e3;       // THP-mode rate response [sm3/d/bar] (measured ~58e3 on GNETINJE_GAS-01)
+        double p0 = 500.0;           // network pressure at zero rate [bar]
+        double dp_dq = -0.5e-3;      // network response [bar per sm3/d]
+
+        double rate(double p_leaf) const
+        {
+            if (p_leaf >= thp_switch) {
+                return q_group;
+            }
+            return std::clamp(q_group + dq_dthp * (p_leaf - thp_switch), 0.0, q_max);
+        }
+        double computed(double p_leaf) const
+        {
+            return p0 + dp_dq * rate(p_leaf);
+        }
+        // Fixed point: p = p0 + dp_dq * rate(p); on the THP branch this is linear.
+        double fixed_point() const
+        {
+            const double a = dp_dq * dq_dthp;
+            return (p0 + dp_dq * (q_group - dq_dthp * thp_switch)) / (1.0 - a);
+        }
+    };
+
+    int iterationsToConverge(bool secant, const StiffResponse& r, double tol_bar, int max_it)
+    {
+        using namespace Opm::unit;
+        NodePressureUpdater<double> updater;
+        double applied = convert::from(r.p0, bars);
+        for (int it = 1; it <= max_it; ++it) {
+            const double computed = convert::from(r.computed(convert::to(applied, bars)), bars);
+            if (std::abs(computed - applied) < convert::from(tol_bar, bars)) {
+                return it;
+            }
+            applied = secant
+                ? updater.next(applied, computed, /*valid=*/true, 0.1, convert::from(5.0, bars))
+                : NodePressureUpdater<double>::damped(applied, computed - applied, 0.1, convert::from(5.0, bars));
+        }
+        return max_it + 1;
+    }
+}
+
+BOOST_AUTO_TEST_CASE(stiff_response_converges_with_bracketing)
+{
+    const StiffResponse r{};
+    // Loop gain |dp_dq * dq_dthp| = 30 on the THP branch, so the damped update
+    // (0.1, capped at 5 bar/step) is unstable there (needs 0.1 < 2/31) and never settles.
+    BOOST_CHECK_GT(iterationsToConverge(false, r, 0.5, 100), 100);
+    // The bracketing update does, and to the analytic fixed point.
+    const int its = iterationsToConverge(true, r, 0.5, 100);
+    BOOST_CHECK_LE(its, 25);
+
+    NodePressureUpdater<double> updater;
+    double applied = convert::from(r.p0, bars);
+    for (int it = 0; it < its; ++it) {
+        const double computed = convert::from(r.computed(convert::to(applied, bars)), bars);
+        applied = updater.next(applied, computed, true, 0.1, convert::from(5.0, bars));
+    }
+    BOOST_CHECK_CLOSE(convert::to(applied, bars), r.fixed_point(), 1.0);
+}
+
+BOOST_AUTO_TEST_CASE(invalid_evaluation_moves_pressure_down)
+{
+    NodePressureUpdater<double> updater;
+    const double applied = convert::from(300.0, bars);
+    // No VFP solution: treated as "pressure too high"; the update must move down and
+    // not freeze the node.
+    const double next = updater.next(applied, applied, /*valid=*/false, 0.1, convert::from(5.0, bars));
+    BOOST_CHECK_LT(next, applied);
+}
+
+BOOST_AUTO_TEST_CASE(stale_bracket_end_is_dropped)
+{
+    // Seen on GNETINJE_GAS-01: a residual > 0 recorded while the wells were momentarily
+    // stopped (Q=0) leaves a stale lower bracket end; all later evaluations at or above it
+    // have r < 0, and the bracket must not collapse onto the stale end and stall.
+    using namespace Opm::unit;
+    NodePressureUpdater<double> updater;
+    const auto bar = [](double v) { return convert::from(v, bars); };
+    // stale lower end: applied 207.17, computed 499.4 (wells stopped)
+    updater.next(bar(207.17), bar(499.4), true, 0.1, bar(5.0));
+    // then the real response: computed 94.78 whenever applied >= 207.17
+    double applied = bar(247.27);
+    double prev = applied;
+    for (int it = 0; it < 30; ++it) {
+        applied = updater.next(applied, bar(94.78), true, 0.1, bar(5.0));
+        BOOST_CHECK(applied <= prev);          // must keep moving down (or stay converged) ...
+        prev = applied;
+    }
+    BOOST_CHECK(applied < bar(207.0));         // ... and get past the stale end
+}
+
+BOOST_AUTO_TEST_CASE(plateau_floor_limits_first_step)
+{
+    // Wells on group control at THP 207: the leaf rate, and hence the computed pressure
+    // (94.8), is independent of the applied pressure down to 207 bar; below it the wells
+    // become THP-limited. The first (unbracketed) step from 499 must land just below the
+    // kink, not at the computed pressure deep in the dead zone.
+    using namespace Opm::unit;
+    NodePressureUpdater<double> updater;
+    const auto bar = [](double v) { return convert::from(v, bars); };
+    // No history: first step is damped/capped, but the plateau rule takes it to the kink.
+    const double next = updater.next(bar(499.4), bar(94.8), true, 0.1, bar(100.0), bar(207.0));
+    BOOST_CHECK_CLOSE(convert::to(next, bars), 206.5, 1e-6);
+}
+
+BOOST_AUTO_TEST_CASE(unbracketed_steps_are_capped)
+{
+    using namespace Opm::unit;
+    NodePressureUpdater<double> updater;
+    const auto bar = [](double v) { return convert::from(v, bars); };
+    // Two points on a plateau (r' = -1) predict the fixed point at 94.8; without a
+    // bracket the step is limited to 25% of the pressure.
+    updater.next(bar(499.4), bar(94.8), true, 0.1, bar(100.0));
+    const double next = updater.next(bar(459.4), bar(94.8), true, 0.1, bar(100.0));
+    BOOST_CHECK_CLOSE(convert::to(next, bars), 0.75 * 459.4, 1e-6);
+}
+
+BOOST_AUTO_TEST_SUITE_END() // NodePressureUpdaterTests

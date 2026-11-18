@@ -1073,6 +1073,7 @@ include (${CMAKE_CURRENT_SOURCE_DIR}/regressionTests.cmake)
 include (${CMAKE_CURRENT_SOURCE_DIR}/comparisonTests.cmake)
 include (${CMAKE_CURRENT_SOURCE_DIR}/restartTests.cmake)
 include (${CMAKE_CURRENT_SOURCE_DIR}/rollbackTests.cmake)
+include (${CMAKE_CURRENT_SOURCE_DIR}/networkCostTests.cmake)
 
 # PORV test
 opm_set_test_driver(${PROJECT_SOURCE_DIR}/tests/run-porv-acceptanceTest.sh "")
