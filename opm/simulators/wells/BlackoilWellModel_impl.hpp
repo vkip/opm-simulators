@@ -2519,8 +2519,46 @@ namespace Opm {
     }
 
     template<typename TypeTag>
+    void BlackoilWellModel<TypeTag>::
+    balanceProductionGroupTree(const bool refresh_ipr, DeferredLogger& deferred_logger)
+    {
+        OPM_TIMEFUNCTION();
+        const int reportStepIdx = simulator_.episodeIndex();
+        // Past NUPCOL the group rates are frozen at the NUPCOL state, and a
+        // balance against the current iterate would disagree with them.
+        const auto& iterCtx = simulator_.problem().iterationContext();
+        if (!iterCtx.withinNupcol(this->schedule()[reportStepIdx].nupcol())) {
+            return;
+        }
+        Dune::Timer timer;
+        timer.start();
+        // The iterate-based limits assume a solved well state. At the first
+        // iteration of a time step a GRUP well still holds its initial guess,
+        // its share of the group target, and a THP-limited well can then look
+        // able to produce many times what it can. Use the potentials there;
+        // for the network's wells they are replaced below.
+        auto limits = iterCtx.isFirstGlobalIteration()
+            ? prepareWellsForBalancingFromPotentials_(deferred_logger)
+            : prepareWellsForBalancing_(deferred_logger, refresh_ipr);
+        // Neither the iterate nor the potentials see the back-pressure a
+        // network well works against at the start of a step. The last solved
+        // network does: each of its wells' allowance at its node pressure.
+        this->network_.overrideBalancerLimits(reportStepIdx, limits);
+        this->updateAndCommunicateGroupData(reportStepIdx, /*update_wellgrouptarget*/ false);
+        ProdGroupTreeBalancer::runGroupTreeBalancer(*this,
+                                                    this->summaryState(),
+                                                    reportStepIdx,
+                                                    param_.group_tree_balancer_tolerance_,
+                                                    limits,
+                                                    deferred_logger);
+        this->updateAndCommunicateGroupData(reportStepIdx, /*update_wellgrouptarget*/ true);
+        group_tree_balance_time_ += timer.stop();
+        ++group_tree_balances_;
+    }
+
+    template<typename TypeTag>
     auto BlackoilWellModel<TypeTag>::
-    prepareWellsForBalancing_(DeferredLogger& deferred_logger)
+    prepareWellsForBalancing_(DeferredLogger& deferred_logger, const bool refresh_ipr)
         -> std::unordered_map<std::string, std::pair<int, Scalar>>
     {
         OPM_TIMEFUNCTION();
@@ -2596,7 +2634,7 @@ namespace Opm {
             }
 
             // IPR path: refresh coefficients, then compute strictest limit.
-            if (param_.use_implicit_ipr_) {
+            if (refresh_ipr && param_.use_implicit_ipr_) {
                 try {
                     well->updateIPRImplicit(
                         simulator_, this->groupStateHelper(), this->wellState());

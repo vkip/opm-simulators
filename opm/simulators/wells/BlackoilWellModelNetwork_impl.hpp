@@ -211,7 +211,17 @@ update(const bool mandatory_network_balance,
         }
 
         bool more_network_sub_update = false;
+        const bool balance_group_tree = well_model_.param().network_group_tree_balancer_
+            && has_domain(/*production=*/true);
         for (int i = 0; i < max_number_of_sub_iterations; i++) {
+            if (balance_group_tree) {
+                // Group targets balanced at the current node pressures, so the
+                // network solve pins the group-controlled wells at rates the
+                // group tree can deliver. The newton path has just refreshed
+                // every IPR before the first sub-iteration.
+                well_model_.balanceProductionGroupTree(/*refresh_ipr=*/!(solver_mode == "newton" && i == 0),
+                                                       deferred_logger);
+            }
             const auto local_network_imbalance =
                 this->updatePressures(episodeIdx,
                                       network_pressure_update_damping_factor,
@@ -321,6 +331,11 @@ update(const bool mandatory_network_balance,
             const auto [solves, failed, seconds] = this->newtonSolveStats();
             OpmLog::debug(fmt::format("Network: {} simultaneous production solves so far, "
                                       "{} not converged, {:.2f} s", solves, failed, seconds));
+        }
+        if (balance_group_tree && comm.rank() == 0) {
+            const auto [balances, seconds] = well_model_.groupTreeBalanceStats();
+            OpmLog::debug(fmt::format("Network: {} group tree balances so far, {:.2f} s",
+                                      balances, seconds));
         }
     }
     return { more_network_update, network_imbalance };

@@ -27,6 +27,8 @@
 #include <opm/input/eclipse/Schedule/Group/Group.hpp>
 #include <opm/input/eclipse/Schedule/Group/GuideRate.hpp>
 #include <opm/input/eclipse/Schedule/Group/GuideRateModel.hpp>
+#include <opm/input/eclipse/Schedule/Network/ExtNetwork.hpp>
+#include <opm/input/eclipse/Schedule/Network/Node.hpp>
 #include <opm/input/eclipse/Schedule/Schedule.hpp>
 #include <opm/input/eclipse/Schedule/Well/Well.hpp>
 
@@ -48,7 +50,9 @@
 #include <limits>
 #include <numeric>
 #include <optional>
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace Opm::ProdGroupTreeBalancer {
 
@@ -2258,6 +2262,35 @@ bool runGroupTreeBalancer(BlackoilWellModelGeneric<Scalar, IndexTraits>& wellMod
         logger.warning("ProdGroupTreeBalancer",
             "Group tree balancer converged but validity check failed. "
             "Some nodes may not satisfy their constraints.");
+    }
+
+    // Under an autochoke the network meets the group's target through the node
+    // pressure, not through the rates of its wells; writing balanced rates and
+    // modes there fights the choke (it flips the group's control every call).
+    const auto& network = wellModel.schedule()[reportStep].network();
+    if (network.active()) {
+        const auto underChoke = [&](std::string name) {
+            while (!name.empty()) {
+                if (network.has_node(name) && network.node(name).as_choke()) {
+                    return true;
+                }
+                const auto it = tree.find(name);
+                if (it == tree.end()) {
+                    break;
+                }
+                name = it->second.parent;
+            }
+            return false;
+        };
+        std::vector<std::string> choked;
+        for (const auto& [name, node] : tree) {
+            if (underChoke(name)) {
+                choked.push_back(name);
+            }
+        }
+        for (const auto& name : choked) {
+            tree.erase(name);
+        }
     }
 
     applyTreeToState(tree, wellModel, logger);

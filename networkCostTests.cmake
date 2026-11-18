@@ -61,6 +61,24 @@ add_network_cost_test(
             --network-complementarity=true
 )
 
+# The group-tree balancer (#7220) before each network sub-iteration, on a deck
+# with an autochoke. The balancer must leave the choked subtree to the choke:
+# writing balanced modes there flipped B1 between ORAT and NONE on every call
+# and the run stalled at day 23. Measured 2026-11-18: 14378 fallbacks (newton
+# declines the choked tree without --network-autochoke), 737 Newton, 48635
+# well solves, B-1H 45 % of them.
+add_network_cost_test(
+  CASENAME autochoke_group_tree_balancer
+  FILENAME NETWORK_MODEL5_STDW_AUTOCHK
+  DIR network
+  MAX_FALLBACKS 18000
+  MAX_NEWTON 920
+  MAX_WELL_SOLVES 61000
+  MAX_WELL_SHARE 60
+  TEST_ARGS --network-solver=newton --network-newton-skip-confirmation=true
+            --network-group-tree-balancer=true
+)
+
 # The simultaneous solve reaches the same balance as the relaxed update by a
 # different route, so on a deck where the relaxed update converges the two must
 # agree. Checkable without any external reference, which matters because these

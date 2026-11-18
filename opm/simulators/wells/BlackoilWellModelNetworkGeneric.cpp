@@ -30,6 +30,7 @@
 #include <opm/simulators/wells/network/NetworkProductionSystem.hpp>
 
 #include <fstream>
+#include <limits>
 #include <dune/common/timer.hh>
 #include <opm/simulators/wells/WellInterfaceGeneric.hpp>
 
@@ -1216,6 +1217,78 @@ wellBackpressureThp(const std::string& well,
         return std::nullopt;
     }
     return leaf->second + (*with - *without);
+}
+
+template<typename Scalar, typename IndexTraits>
+void
+BlackoilWellModelNetworkGeneric<Scalar, IndexTraits>::
+overrideBalancerLimits(const int reportStepIdx,
+                       std::unordered_map<std::string, std::pair<int, Scalar>>& limits) const
+{
+    using Sys = NetworkSolve::ProductionSystem<Scalar>;
+    constexpr Scalar unbounded = std::numeric_limits<Scalar>::max();
+    for (const auto& [root, tree] : last_production_solve_) {
+        if (!tree.system) {
+            continue;
+        }
+        const auto& system = *tree.system;
+        for (int w = 0; w < system.numWells(); ++w) {
+            const auto& well = system.wells()[w];
+            const auto p = tree.pressures.find(tree.order[well.node]);
+            if (p == tree.pressures.end()) {
+                continue;
+            }
+            const int cp = well.cp;
+            if (well.shut || !(well.ipr_b[cp] < Scalar{0})) {
+                limits.erase(well.name);
+                continue;
+            }
+            // The rate (in the control phase) the tubing allows at the node
+            // pressure; max() if it does not bind, zero if it cannot lift there.
+            const Scalar q_thp = Sys::hasTubing(well) ? system.thpPotential(well, p->second) : unbounded;
+            if (!(q_thp > Scalar{0})) {
+                limits.erase(well.name);
+                continue;
+            }
+            Scalar bhp = well.bhp_limit;
+            auto mode = Well::ProducerCMode::BHP;
+            if (q_thp < unbounded) {
+                const Scalar bhp_thp = (q_thp - well.ipr_a[cp]) / well.ipr_b[cp];
+                if (bhp_thp > well.bhp_limit) {
+                    bhp = bhp_thp;
+                    mode = Well::ProducerCMode::THP;
+                }
+            }
+            std::array<Scalar, Sys::NP> q{};   // water, oil, gas
+            for (int ph = 0; ph < Sys::NP; ++ph) {
+                q[ph] = std::max(Sys::ipr(well, ph, bhp), Scalar{0});
+            }
+            const Scalar total = q[0] + q[1] + q[2];
+            if (!(total > Scalar{0})) {
+                limits.erase(well.name);
+                continue;
+            }
+            // The well's own rate limits, on the phase split the inflow gives
+            // at that bhp: the one that cuts the pressure-limited rate most is
+            // the strictest.
+            const auto controls = well_model_.schedule().getWell(well.name, reportStepIdx)
+                                      .productionControls(well_model_.summaryState());
+            Scalar scale = 1.0;
+            Scalar limit = total;
+            const auto consider = [&](const Well::ProducerCMode cmode, const Scalar target, const Scalar rate) {
+                if (controls.hasControl(cmode) && target > Scalar{0} && rate * scale > target) {
+                    scale = target / rate;
+                    limit = target;
+                    mode = cmode;
+                }
+            };
+            consider(Well::ProducerCMode::ORAT, static_cast<Scalar>(controls.oil_rate), q[1]);
+            consider(Well::ProducerCMode::WRAT, static_cast<Scalar>(controls.water_rate), q[0]);
+            consider(Well::ProducerCMode::GRAT, static_cast<Scalar>(controls.gas_rate), q[2]);
+            consider(Well::ProducerCMode::LRAT, static_cast<Scalar>(controls.liquid_rate), q[0] + q[1]);
+            limits[well.name] = {static_cast<int>(mode), limit};
+        }
+    }
 }
 
 template<typename Scalar, typename IndexTraits>

@@ -44,6 +44,7 @@ struct BlackoilWellModelGenericParameters
     bool use_multisegment_well_;
     std::string convert_to_multisegment_well_;
     bool enable_group_tree_balancer_;
+    bool network_group_tree_balancer_;
 };
 
 } // namespace Opm

@@ -41,6 +41,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <unordered_map>
 
 namespace Opm {
     class Schedule;
@@ -263,6 +264,17 @@ public:
     /// an autochoke or invalid node on the chain, a missing branch).
     std::optional<Scalar> wellBackpressureThp(const std::string& well,
                                               const std::vector<Scalar>& surface_rates) const;
+
+    /// Set the group-tree balancer's limit of every well in the last solved
+    /// production trees to what that well can produce at its node's solved
+    /// pressure: the THP crossing on its inflow, its BHP limit and its own
+    /// rate limits, the strictest of these. A well that cannot lift there is
+    /// removed; one the well model left out (stopped, or at zero rate) but
+    /// which the network can lift is put back. Limits are
+    /// {Well::ProducerCMode, limit}; the same on every rank, as the solved
+    /// trees are.
+    void overrideBalancerLimits(int reportStepIdx,
+                                std::unordered_map<std::string, std::pair<int, Scalar>>& limits) const;
     /// Production network solves so far: count, failures, seconds.
     std::tuple<long, long, double> newtonSolveStats() const
     { return {newton_solves_, newton_failed_solves_, newton_solve_time_}; }

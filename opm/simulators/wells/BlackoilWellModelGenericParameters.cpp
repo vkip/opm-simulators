@@ -33,6 +33,7 @@ BlackoilWellModelGenericParameters<Scalar>::BlackoilWellModelGenericParameters()
     , use_multisegment_well_(Parameters::Get<Parameters::UseMultisegmentWell>())
     , convert_to_multisegment_well_(Parameters::Get<Parameters::ConvertToMultisegmentWell>())
     , enable_group_tree_balancer_(Parameters::Get<Parameters::EnableGroupTreeBalancer>())
+    , network_group_tree_balancer_(Parameters::Get<Parameters::NetworkGroupTreeBalancer>())
 {}
 
 template struct BlackoilWellModelGenericParameters<double>;

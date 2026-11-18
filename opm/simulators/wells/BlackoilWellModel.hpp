@@ -489,6 +489,13 @@ template<class Scalar> class WellContributions;
                                               const double dt,
                                               DeferredLogger& local_deferredLogger);
 
+            /// @brief Balance the production group tree (#7220 balancer) at the
+            ///   current iterate, within NUPCOL. Called by the network update
+            ///   before each sub-iteration under --network-group-tree-balancer.
+            /// @param refresh_ipr Refresh the implicit IPRs of GRUP wells first;
+            ///   false when the caller has just refreshed them.
+            void balanceProductionGroupTree(bool refresh_ipr, DeferredLogger& deferred_logger);
+
             // TODO: finding a better naming
             void assembleWellEqWithoutIteration(const double dt);
 
@@ -618,6 +625,12 @@ template<class Scalar> class WellContributions;
 
             // A flag to tell the convergence report whether we need to take another newton step
             bool network_needs_more_balancing_force_another_newton_iteration_{false};
+            double group_tree_balance_time_{0.0};
+            long group_tree_balances_{0};
+        public:
+            std::pair<long, double> groupTreeBalanceStats() const
+            { return {group_tree_balances_, group_tree_balance_time_}; }
+        protected:
 
             // Whether the warning about --matrix-add-well-contributions with distributed wells was issued
             bool matrix_add_distributed_warned_{false};
@@ -811,7 +824,7 @@ template<class Scalar> class WellContributions;
             ///   wells and runs updateIPRImplicit for GRUP-controlled wells.
             /// Returns the globally gathered limits map (same on every MPI rank).
             std::unordered_map<std::string, std::pair<int, Scalar>>
-            prepareWellsForBalancing_(DeferredLogger& deferred_logger);
+            prepareWellsForBalancing_(DeferredLogger& deferred_logger, bool refresh_ipr = true);
 
             /// @brief Prepare wells for the group-tree balancer using well potentials
             ///   as the pressure-based production capacity proxy.  Does not require a

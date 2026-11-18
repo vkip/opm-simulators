@@ -143,6 +143,7 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     well_group_constraints_max_iterations_ = Parameters::Get<Parameters::WellGroupConstraintsMaxIterations>();
     group_control_fraction_tolerance_ = Parameters::Get<Parameters::GroupControlFractionTolerance<Scalar>>();
     enable_group_tree_balancer_ = Parameters::Get<Parameters::EnableGroupTreeBalancer>();
+    network_group_tree_balancer_ = Parameters::Get<Parameters::NetworkGroupTreeBalancer>();
     group_tree_balancer_tolerance_ = Parameters::Get<Parameters::GroupTreeBalancerTolerance<Scalar>>();
 }
 
@@ -417,6 +418,11 @@ void BlackoilModelParameters<Scalar>::registerParameters()
     Parameters::Register<Parameters::EnableGroupTreeBalancer>
         ("Enable the production group-tree balancing predictor (runs before the standard "
          "well/group control update loop)");
+    Parameters::Register<Parameters::NetworkGroupTreeBalancer>
+        ("Run the production group-tree balancer once before each network sub-iteration, so "
+         "the network solve sees group targets balanced at the current node pressures. "
+         "Intended with --network-solver=newton --network-newton-skip-confirmation=true, "
+         "where that is one balance per network update");
     Parameters::Register<Parameters::GroupTreeBalancerTolerance<Scalar>>
         ("Relative convergence tolerance for the production group-tree balancer");
 

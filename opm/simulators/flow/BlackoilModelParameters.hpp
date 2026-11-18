@@ -106,7 +106,8 @@ struct UpdateEquationsScaling { static constexpr bool value = false; };
 struct UseUpdateStabilization { static constexpr bool value = true; };
 struct MatrixAddWellContributions { static constexpr bool value = false; };
 
-struct EnableGroupTreeBalancer { static constexpr bool value = true; };
+struct EnableGroupTreeBalancer { static constexpr bool value = false; };
+struct NetworkGroupTreeBalancer { static constexpr bool value = false; };
 template<class Scalar>
 struct GroupTreeBalancerTolerance { static constexpr Scalar value = 1e-5; };
 
@@ -489,6 +490,10 @@ public:
 
     /// Enable the production group-tree balancing predictor
     bool enable_group_tree_balancer_;
+
+    /// Run the production group-tree balancer once before each network
+    /// sub-iteration, so the network solve sees balanced group targets.
+    bool network_group_tree_balancer_;
 
     /// Relative tolerance for the group-tree balancer convergence check
     Scalar group_tree_balancer_tolerance_;
