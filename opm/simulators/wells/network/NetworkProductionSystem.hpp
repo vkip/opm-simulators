@@ -85,6 +85,11 @@ public:
         std::array<Scalar, NP> ipr_a{};
         std::array<Scalar, NP> ipr_b{};
         Scalar bhp_limit = 0.0;
+        /// The phase (water 0, oil 1, gas 2) the well's rate limit, allowance,
+        /// tubing crossing and rate control are expressed in. Oil unless the
+        /// well has no oil inflow, as a gas producer without vaporised oil.
+        int cp = 1;
+        /// Rate limit in the control phase cp (the oil rate for cp = 1).
         Scalar oil_rate_limit = 0.0;
         /// Held by the group, so its rate counts against the target whatever
         /// control it ends on.
@@ -107,7 +112,7 @@ public:
         /// branch's gas stream, but it is not produced, so it is not in q. Zero
         /// unless the node is set to add it (NODEPROP item 4).
         Scalar lift_gas = 0.0;
-        /// The oil rate the well model has now. A tubing table with a loading
+        /// The rate (in phase cp) the well model has now. A tubing table with a loading
         /// hump gives a well two branches, dead and flowing, and which one the
         /// solve lands on depends on where it starts; this says which it is on.
         Scalar q_start = 0.0;
@@ -161,7 +166,7 @@ public:
         if (well.dead_above > Scalar{0} && p >= well.dead_above) {
             return Scalar{0};
         }
-        Scalar allow = ipr(well, 1, well.bhp_limit);
+        Scalar allow = ipr(well, well.cp, well.bhp_limit);
         if (well.oil_rate_limit > Scalar{0}) {
             allow = std::min(allow, well.oil_rate_limit);
         }
@@ -235,7 +240,7 @@ public:
     }
     Scalar cmplAllowance(const Well& well, const Scalar scan) const
     {
-        Scalar allow = std::min(scan, ipr(well, 1, well.bhp_limit));
+        Scalar allow = std::min(scan, ipr(well, well.cp, well.bhp_limit));
         if (well.oil_rate_limit > Scalar{0}) { allow = std::min(allow, well.oil_rate_limit); }
         return allow;
     }
@@ -380,7 +385,7 @@ public:
 
     Scalar thpPotential(const Well& w, const Scalar p_node) const
     {
-        if (!hasTubing(w) || !(w.ipr_b[1] < Scalar{0})) {
+        if (!hasTubing(w) || !(w.ipr_b[w.cp] < Scalar{0})) {
             return Scalar{0};
         }
         // The bhp at which the *last* phase stops, not the one at which oil
@@ -464,7 +469,7 @@ public:
             bhp = Scalar{0.5} * (a + b);
             (h(bhp) < Scalar{0} ? a : b) = bhp;
         }
-        return std::max(ipr(w, 1, bhp), Scalar{0});
+        return std::max(ipr(w, w.cp, bhp), Scalar{0});
     }
 
     std::vector<Scalar> guides() const
@@ -548,7 +553,7 @@ public:
             // Every well the group allocated counts against the target, on
             // whatever control it ended on.
             if (well.in_group) {
-                produced += q[1];
+                produced += q[well.cp];
             }
             Scalar& control = r[4 * nodes + NP * wells + w];
             switch (controls_[w]) {
@@ -560,10 +565,10 @@ public:
                 control = (bhp - well.bhp_limit) / pressure_scale_;
                 break;
             case Control::OilRate:
-                control = (q[1] - well.oil_rate_limit) / rate_scale_;
+                control = (q[well.cp] - well.oil_rate_limit) / rate_scale_;
                 break;
             case Control::Grup:
-                control = (q[1] - well.guide * x[lambdaIdx()]) / rate_scale_;
+                control = (q[well.cp] - well.guide * x[lambdaIdx()]) / rate_scale_;
                 break;
             case Control::Cmpl: {
                 // All three of the well's own limits as one row. a, b, c are
@@ -575,13 +580,13 @@ public:
                 // where the well does flow. q >= 0 is kept by limitStep(), so
                 // the lookup takes max(q, 0).
                 if (cmplDead(w, pressure(well.node))) {
-                    control = q[1] / rate_scale_;
+                    control = q[well.cp] / rate_scale_;
                     break;
                 }
                 std::array<Scalar, NP> qp{};
                 for (int ph = 0; ph < NP; ++ph) { qp[ph] = std::max(q[ph], Scalar{0}); }
                 const Scalar a = (well.oil_rate_limit > Scalar{0})
-                    ? (well.oil_rate_limit - q[1]) / rate_scale_ : Scalar{1e6};
+                    ? (well.oil_rate_limit - q[well.cp]) / rate_scale_ : Scalar{1e6};
                 const Scalar b = (bhp - (tableBhp(well.vfp_table, pressure(well.node), qp, well.alq)
                                          - well.vfp_dp)) / pressure_scale_;
                 const Scalar c = (bhp - well.bhp_limit) / pressure_scale_;
@@ -589,7 +594,7 @@ public:
                 break;
             }
             case Control::Shut:
-                control = (well.ipr_b[1] < Scalar{0}) ? q[1] / rate_scale_
+                control = (well.ipr_b[well.cp] < Scalar{0}) ? q[well.cp] / rate_scale_
                                                       : (bhp - well.bhp_limit) / pressure_scale_;
                 break;
             case Control::Tied: {
@@ -599,7 +604,7 @@ public:
                 // them is zero. Choosing which by the sign at the iterate is
                 // what flips; the Fischer-Burmeister function has the same
                 // zero set and is smooth everywhere but the origin.
-                const Scalar a = (well.oil_rate_limit - q[1]) / rate_scale_;
+                const Scalar a = (well.oil_rate_limit - q[well.cp]) / rate_scale_;
                 const Scalar b = (bhp - (tableBhp(well.vfp_table, pressure(well.node), q, well.alq)
                                          - well.vfp_dp)) / pressure_scale_;
                 control = a + b - std::sqrt(a * a + b * b);
@@ -689,7 +694,7 @@ public:
                     thp[w] = found;
                 }
             }
-            own[w] = std::min(thp[w], ipr(well, 1, well.bhp_limit));
+            own[w] = std::min(thp[w], ipr(well, well.cp, well.bhp_limit));
             if (well.oil_rate_limit > Scalar{0}) {
                 own[w] = std::min(own[w], well.oil_rate_limit);
             }
@@ -709,7 +714,7 @@ public:
             }
             // A bhp limit at or above the shut-in pressure produces nothing;
             // the Bhp row would sit the well there and report injection.
-            if (!(ipr(well, 1, well.bhp_limit) > Scalar{0})) {
+            if (!(ipr(well, well.cp, well.bhp_limit) > Scalar{0})) {
                 changed |= (controls_[w] != Control::Shut);
                 controls_[w] = Control::Shut;
                 continue;
@@ -729,7 +734,7 @@ public:
             if (controls_[w] == Control::Thp) {
                 current_allows = thp[w];
             }
-            consider(Control::Bhp, ipr(well, 1, well.bhp_limit));
+            consider(Control::Bhp, ipr(well, well.cp, well.bhp_limit));
             if (well.oil_rate_limit > Scalar{0}) {
                 consider(Control::OilRate, well.oil_rate_limit);
             }
@@ -806,7 +811,7 @@ public:
             // and the bhp that gives it. Opening at the bhp limit instead puts
             // a well whose limit is the 1 atm default at a rate off the end of
             // every table, and the Newton never comes back from there.
-            Scalar q_oil = ipr(well, 1, well.bhp_limit);
+            Scalar q_oil = ipr(well, well.cp, well.bhp_limit);
             if (well.oil_rate_limit > Scalar{0}) {
                 q_oil = std::min(q_oil, well.oil_rate_limit);
             }
@@ -822,8 +827,8 @@ public:
                 }
             }
             q_oil = std::max(q_oil, Scalar{0});
-            const Scalar bhp = (well.ipr_b[1] < Scalar{0})
-                ? std::max((q_oil - well.ipr_a[1]) / well.ipr_b[1], well.bhp_limit)
+            const Scalar bhp = (well.ipr_b[well.cp] < Scalar{0})
+                ? std::max((q_oil - well.ipr_a[well.cp]) / well.ipr_b[well.cp], well.bhp_limit)
                 : std::max(well.bhp_limit, node_pressure[well.node]);
             x[bhpIdx(w)] = bhp;
             for (int ph = 0; ph < NP; ++ph) {
@@ -918,7 +923,7 @@ public:
     std::optional<std::array<Scalar, NP + 1>> potentialAt(const int w, const Scalar p) const
     {
         const auto& well = wells_[w];
-        if (!hasTubing(well) || !(well.ipr_b[1] < Scalar{0})) {
+        if (!hasTubing(well) || !(well.ipr_b[well.cp] < Scalar{0})) {
             return {};
         }
         auto free_well = well;
@@ -929,7 +934,7 @@ public:
         if (!(q_oil > Scalar{0}) || q_oil == std::numeric_limits<Scalar>::max()) {
             return {};
         }
-        const Scalar bhp = (q_oil - well.ipr_a[1]) / well.ipr_b[1];
+        const Scalar bhp = (q_oil - well.ipr_a[well.cp]) / well.ipr_b[well.cp];
         std::array<Scalar, NP + 1> out{};
         for (int ph = 0; ph < NP; ++ph) {
             out[ph] = std::max(ipr(well, ph, bhp), Scalar{0});
@@ -943,7 +948,7 @@ public:
     {
         State q(wells_.size());
         for (int w = 0; w < numWells(); ++w) {
-            q[w] = x[qwIdx(w, 1)];
+            q[w] = x[qwIdx(w, wells_[w].cp)];
         }
         return q;
     }
@@ -1016,17 +1021,17 @@ public:
         for (int w = 0; w < numWells(); ++w) {
             if (controls_[w] != Control::Cmpl) { continue; }
             const auto& well = wells_[w];
-            const int i = qwIdx(w, 1);
+            const int i = qwIdx(w, wells_[w].cp);
             const Scalar p = well.node == 0 ? terminal_pressure_ : x[pIdx(well.node)];
             const Scalar scan = cachedThpPotential(well, p);
             if (cmplDead(w, p)) { continue; }   // the dead row handles it
             const Scalar allow = cmplAllowance(well, scan);
             const Scalar cap = std::max(std::abs(x[i]), allow);
             d[i] = std::clamp(d[i], -cap, cap);
-            if (x[i] + alpha * d[i] <= Scalar{0} && well.ipr_b[1] < Scalar{0}) {
+            if (x[i] + alpha * d[i] <= Scalar{0} && well.ipr_b[well.cp] < Scalar{0}) {
                 // Re-seed the whole well at the allowance, on its IPR: a rate
                 // alone leaves the bhp where a step toward a negative rate put it.
-                const Scalar bhp = (allow - well.ipr_a[1]) / well.ipr_b[1];
+                const Scalar bhp = (allow - well.ipr_a[well.cp]) / well.ipr_b[well.cp];
                 for (int ph = 0; ph < NP; ++ph) {
                     d[qwIdx(w, ph)] = (std::max(ipr(well, ph, bhp), Scalar{0}) - x[qwIdx(w, ph)]) / alpha;
                 }
@@ -1048,7 +1053,7 @@ public:
                 const Scalar sc = controls_[w] == Control::Cmpl ? cachedThpPotential(well, pw) : Scalar{-1};
                 std::fprintf(stderr, " | %s[%c%s] q %.1f d %.1f bhp %.2f scan %.0f", well.name.c_str(), controlLetter(w),
                              cmpl_dead_[w] ? "/dead" : "",
-                             double(x[qwIdx(w, 1)] * 86400), double(dx[qwIdx(w, 1)] * 86400), double(x[bhpIdx(w)] / unit::barsa),
+                             double(x[qwIdx(w, wells_[w].cp)] * 86400), double(dx[qwIdx(w, wells_[w].cp)] * 86400), double(x[bhpIdx(w)] / unit::barsa),
                              std::min(double(sc * 86400), 9e9));
             }
             std::fprintf(stderr, "\n");
@@ -1204,28 +1209,28 @@ public:
                 add(row, bhpIdx(w), 1.0, pressure_scale_);
                 break;
             case Control::OilRate:
-                add(row, qwIdx(w, 1), 1.0, rate_scale_);
+                add(row, qwIdx(w, wells_[w].cp), 1.0, rate_scale_);
                 break;
             case Control::Grup:
-                add(row, qwIdx(w, 1), 1.0, rate_scale_);
+                add(row, qwIdx(w, wells_[w].cp), 1.0, rate_scale_);
                 add(row, lambdaIdx(), -well.guide, rate_scale_);
                 break;
             case Control::Cmpl: {
                 if (cmplDead(w, pressure(well.node))) {
-                    add(row, qwIdx(w, 1), 1.0, rate_scale_);
+                    add(row, qwIdx(w, wells_[w].cp), 1.0, rate_scale_);
                     break;
                 }
                 std::array<Scalar, NP> q{}, qp{};
                 for (int ph = 0; ph < NP; ++ph) { q[ph] = x[qwIdx(w, ph)]; qp[ph] = std::max(q[ph], Scalar{0}); }
                 const auto e = tableLookup(well.vfp_table, pressure(well.node), qp, well.alq);
                 const bool has_rate = well.oil_rate_limit > Scalar{0};
-                const Scalar a = has_rate ? (well.oil_rate_limit - q[1]) / rate_scale_ : Scalar{1e6};
+                const Scalar a = has_rate ? (well.oil_rate_limit - q[well.cp]) / rate_scale_ : Scalar{1e6};
                 const Scalar b = (x[bhpIdx(w)] - (e.value - well.vfp_dp)) / pressure_scale_;
                 const Scalar c = (x[bhpIdx(w)] - well.bhp_limit) / pressure_scale_;
                 const auto g_ab = dfb(a, b);                 // d fb(a,b) / da, db
                 const auto g_oc = dfb(fb(a, b), c);          // d psi / d fb(a,b), dc
                 const Scalar da = g_oc[0] * g_ab[0], db = g_oc[0] * g_ab[1], dc = g_oc[1];
-                if (has_rate) { add(row, qwIdx(w, 1), -da, rate_scale_); }
+                if (has_rate) { add(row, qwIdx(w, wells_[w].cp), -da, rate_scale_); }
                 add(row, bhpIdx(w), db + dc, pressure_scale_);
                 if (well.node != 0) { add(row, pIdx(well.node), -db * e.dthp, pressure_scale_); }
                 for (int ph = 0; ph < NP; ++ph) {
@@ -1234,20 +1239,20 @@ public:
                 break;
             }
             case Control::Shut:
-                if (well.ipr_b[1] < Scalar{0}) { add(row, qwIdx(w, 1), 1.0, rate_scale_); }
+                if (well.ipr_b[well.cp] < Scalar{0}) { add(row, qwIdx(w, wells_[w].cp), 1.0, rate_scale_); }
                 else { add(row, bhpIdx(w), 1.0, pressure_scale_); }
                 break;
             case Control::Tied: {
                 std::array<Scalar, NP> q{};
                 for (int ph = 0; ph < NP; ++ph) { q[ph] = x[qwIdx(w, ph)]; }
                 const auto e = tableLookup(well.vfp_table, pressure(well.node), q, well.alq);
-                const Scalar a = (well.oil_rate_limit - q[1]) / rate_scale_;
+                const Scalar a = (well.oil_rate_limit - q[well.cp]) / rate_scale_;
                 const Scalar b = (x[bhpIdx(w)] - (e.value - well.vfp_dp)) / pressure_scale_;
                 const Scalar norm = std::sqrt(a * a + b * b);
                 // at the origin the generalised Jacobian; (1 - 1/sqrt 2) on both
                 const Scalar da = (norm > Scalar{0}) ? Scalar{1} - a / norm : Scalar{1} - Scalar{1} / std::sqrt(Scalar{2});
                 const Scalar db = (norm > Scalar{0}) ? Scalar{1} - b / norm : Scalar{1} - Scalar{1} / std::sqrt(Scalar{2});
-                add(row, qwIdx(w, 1), -da, rate_scale_);
+                add(row, qwIdx(w, wells_[w].cp), -da, rate_scale_);
                 add(row, bhpIdx(w), db, pressure_scale_);
                 if (well.node != 0) {
                     add(row, pIdx(well.node), -db * e.dthp, pressure_scale_);
@@ -1259,7 +1264,7 @@ public:
             }
             }
             if (grouped() && any_grup && well.in_group) {
-                add(lambdaIdx(), qwIdx(w, 1), 1.0, rate_scale_);
+                add(lambdaIdx(), qwIdx(w, wells_[w].cp), 1.0, rate_scale_);
             }
         }
         if (!(grouped() && any_grup)) {

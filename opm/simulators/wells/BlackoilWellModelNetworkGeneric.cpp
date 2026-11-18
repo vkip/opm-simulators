@@ -685,6 +685,10 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
         int node, vfp_table;
         Scalar bhp_limit, oil_rate_limit, efficiency;
         bool node_adds_lift_gas, node_is_choke, under_glo;
+        Scalar water_rate_limit, gas_rate_limit;
+        /// The deck's rate limit in phase cp (water 0, oil 1, gas 2).
+        Scalar rateLimit(const int cp) const
+        { return cp == 1 ? oil_rate_limit : (cp == 2 ? gas_rate_limit : water_rate_limit); }
     };
     std::vector<Candidate> candidates;
     for (const auto& name : schedule.wellNames(reportStepIdx)) {
@@ -711,16 +715,18 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
                               static_cast<Scalar>(controls.oil_rate),
                               static_cast<Scalar>(well.getEfficiencyFactor(/*network=*/true)),
                               network.node(well.groupName()).add_gas_lift_gas(),
-                              network.node(well.groupName()).as_choke(), under_glo});
+                              network.node(well.groupName()).as_choke(), under_glo,
+                              static_cast<Scalar>(controls.water_rate),
+                              static_cast<Scalar>(controls.gas_rate)});
     }
     if (candidates.empty()) {
         return giveUp("no producers hang off it");
     }
 
-    // Per candidate: present, usable, three ipr_a, three ipr_b, current oil
-    // rate, on group, efficiency scaling, alq, tubing-table correction,
-    // current thp.
-    constexpr int kEntries = 15;
+    // Per candidate: present, usable, three ipr_a, three ipr_b, current rate
+    // in the control phase, on group, efficiency scaling, alq, tubing-table
+    // correction, current thp, control mode, control phase.
+    constexpr int kEntries = 16;
     std::vector<Scalar> shared(candidates.size() * kEntries, 0.0);
     for (std::size_t i = 0; i < candidates.size(); ++i) {
         const auto it = local.find(candidates[i].name);
@@ -733,9 +739,25 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
         }
         Scalar* e = &shared[i * kEntries];
         e[0] = 1.0;
-        if (static_cast<int>(ws.implicit_ipr_b.size()) >= pu.numActivePhases()
-            && ws.implicit_ipr_b[pos[1]] > Scalar{0}) {
-            e[1] = 1.0;
+        // The control phase: oil where the well has an oil inflow, else gas
+        // (a gas producer without vaporised oil), else water. An inflow that
+        // is a millionth of another phase's is numerically none: a gas well's
+        // oil can be 1e-16 of its gas, and rows in it are degenerate.
+        int cp = 1;
+        if (static_cast<int>(ws.implicit_ipr_b.size()) >= pu.numActivePhases()) {
+            const auto b = [&](const int ph) { return ws.implicit_ipr_b[pos[ph]]; };
+            constexpr Scalar negligible = 1e-6;
+            for (const int ph : {1, 2, 0}) {
+                const Scalar others = std::max({b(0), b(1), b(2)});
+                if (b(ph) > Scalar{0} && b(ph) >= negligible * others) {
+                    cp = ph;
+                    e[1] = 1.0;
+                    break;
+                }
+            }
+        }
+        e[15] = cp;
+        if (e[1] > Scalar{0}) {
             for (int ph = 0; ph < Sys::NP; ++ph) {
                 // The well state holds q = b*bhp - a in opm's signed rates,
                 // where production is negative. The system wants production
@@ -744,7 +766,17 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
                 e[5 + ph] = -ws.implicit_ipr_b[pos[ph]];
             }
         }
-        e[8] = std::max(-ws.surface_rates[pos[1]], Scalar{0});
+        e[8] = std::max(-ws.surface_rates[pos[cp]], Scalar{0});
+        if (e[1] <= Scalar{0}) {
+            // No inflow performance in any phase. A well that still flows
+            // enters the system as a fixed source at its current rates, in the
+            // ipr_a slots; e[8] is then its total rate.
+            e[8] = 0.0;
+            for (int ph = 0; ph < Sys::NP; ++ph) {
+                e[2 + ph] = std::max(-ws.surface_rates[pos[ph]], Scalar{0});
+                e[8] += e[2 + ph];
+            }
+        }
         e[9] = (ws.production_cmode == Well::ProducerCMode::GRUP) ? 1.0 : 0.0;
         e[10] = ws.efficiency_scaling_factor;
         // The alq the well's own tubing table sees. Under WLIFTOPT the
@@ -790,7 +822,17 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
         typename Sys::Well w;
         if (e[1] <= Scalar{0}) {
             if (!shut_rows) {
-                return giveUp(fmt::format("{} has no usable inflow performance", candidate.name));
+                // Frozen at its current rates for this solve, as the relaxed
+                // evaluation also has it; nothing to place, but its flow loads
+                // the branches above it.
+                if (e[8] > Scalar{0}) {
+                    auto source = system.nodeSource(candidate.node);
+                    for (int ph = 0; ph < Sys::NP; ++ph) {
+                        source[ph] += candidate.efficiency * e[10] * e[2 + ph];
+                    }
+                    system.setNodeSource(candidate.node, source);
+                }
+                continue;
             }
             // No inflow performance: the well model has it at zero rate. It
             // is shut in the system rather than the system refused.
@@ -820,11 +862,19 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
         if (candidate.node_adds_lift_gas) {
             w.lift_gas = e[11];
         }
+        // A phase whose inflow is a millionth of the dominant one's is noise
+        // (a gas well's oil at 1e-16): its zero-flow pressure -a/b lands at
+        // thousands of bar and stretches every bracket the system searches,
+        // so that thpPotential() reports a lifting well as unbounded.
+        const Scalar b_max = -std::min({e[5], e[6], e[7]});
         for (int ph = 0; ph < Sys::NP; ++ph) {
-            w.ipr_a[ph] = e[2 + ph];
-            w.ipr_b[ph] = e[5 + ph];
+            const bool negligible = !(-e[5 + ph] >= Scalar{1e-6} * b_max);
+            w.ipr_a[ph] = negligible ? Scalar{0} : e[2 + ph];
+            w.ipr_b[ph] = negligible ? Scalar{0} : e[5 + ph];
         }
         w.bhp_limit = candidate.bhp_limit;
+        w.cp = static_cast<int>(e[15]);
+        const Scalar rate_limit = candidate.rateLimit(w.cp);
         const Scalar current = e[8];
         const bool on_group = e[9] > Scalar{0};
         w.q_start = current;
@@ -833,8 +883,8 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
             // The choke decides these wells' rates through the node pressure;
             // pinning them at what they do now would leave it nothing to act
             // on. They keep only their own deck limits.
-            w.oil_rate_limit = candidate.oil_rate_limit;
-            w.guide = std::max(current, candidate.oil_rate_limit);
+            w.oil_rate_limit = rate_limit;
+            w.guide = std::max(current, rate_limit);
             // A well the well model has at zero rate is dead at its thp, and
             // the linearised inflow with the tubing table would still find a
             // flowing crossing for it. More back-pressure cannot revive it.
@@ -846,7 +896,7 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
             // place the split, bounded by each well's own limit.
             group_target += current;
             w.in_group = true;
-            w.oil_rate_limit = candidate.oil_rate_limit;
+            w.oil_rate_limit = rate_limit;
             w.guide = current;
         } else if (free_thp_wells && candidate.vfp_table > 0
                    && static_cast<Well::ProducerCMode>(e[14]) == Well::ProducerCMode::THP) {
@@ -855,8 +905,8 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
             // the rate it already has left nothing to solve, which is why
             // --network-solver=newton declined these trees outright -- the
             // whole NETWORK-01 family among them.
-            w.oil_rate_limit = candidate.oil_rate_limit;
-            w.guide = std::max(current, candidate.oil_rate_limit);
+            w.oil_rate_limit = rate_limit;
+            w.guide = std::max(current, rate_limit);
         } else {
             // Otherwise the well is held where it already is. Re-deriving it
             // from the deck's WCONPROD limit would overwrite an operating point
@@ -909,7 +959,8 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
                                      w.ipr_a[0], w.ipr_a[1], w.ipr_a[2], w.ipr_b[0], w.ipr_b[1], w.ipr_b[2],
                                      w.bhp_limit, w.oil_rate_limit, w.guide, w.efficiency, w.vfp_dp,
                                      w.alq, w.lift_gas, w.dead_above,
-                                     static_cast<Scalar>(w.pinned), static_cast<Scalar>(w.in_group)});
+                                     static_cast<Scalar>(w.pinned), static_cast<Scalar>(w.in_group),
+                                     static_cast<Scalar>(w.cp)});
     }
     for (int n = 1; n <= system.numNodes(); ++n) {
         inputs.insert(inputs.end(), {system.chokeTarget(n), system.nodes()[n].efficiency});
