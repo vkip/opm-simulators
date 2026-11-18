@@ -36,7 +36,7 @@ add_network_cost_test(
   MAX_NEWTON 260
   MAX_WELL_SOLVES 6000
   MAX_WELL_SHARE 60
-  TEST_ARGS --network-solver=newton --network-analytic-jacobian=true
+  TEST_ARGS --network-solver=newton
             --network-group-control=true --network-autochoke=true
             --network-complementarity=true
 )
@@ -51,7 +51,7 @@ add_network_cost_test(
   MAX_NEWTON 680
   MAX_WELL_SOLVES 11500
   MAX_WELL_SHARE 45
-  TEST_ARGS --network-solver=newton --network-analytic-jacobian=true
+  TEST_ARGS --network-solver=newton
             --network-group-control=true --gas-lift-network-response=true
             --network-complementarity=true
 )
@@ -99,7 +99,7 @@ endfunction()
 #   NETWORK-01-WEFAC-...    128788 / 430   vs 128772 / 365
 #   NETWORK-01-MULTIROOT    778152 / 407   vs 778188 / 380
 #   6_UDA_MODEL5_STDW       317225 / 1781  vs 317225 / 1788  (exact)
-set(_agree_newton --network-solver=newton --network-analytic-jacobian=true)
+set(_agree_newton --network-solver=newton)
 
 foreach(case NETWORK-01 NETWORK-01_STANDARD NETWORK-01-WTEST
              NETWORK-01-WEFAC-GEFAC-ITEM3NO NETWORK-01-MULTIROOT)

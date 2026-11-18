@@ -145,7 +145,10 @@ update(const bool mandatory_network_balance,
                              "expected fixedpoint or newton", deferred_logger);
         }
         this->useNewtonSolver(solver_mode == "newton");
-        this->useAnalyticJacobian(well_model_.param().network_analytic_jacobian_);
+        // A differenced Jacobian is too coarse for stiff wells (a tenth of a bar
+        // of drawdown): it fails where the assembled one converges, at a
+        // multiple of the cost.
+        this->useAnalyticJacobian(solver_mode == "newton");
         this->useNetworkGroupControl(well_model_.param().network_group_control_);
         this->useNetworkAutochoke(well_model_.param().network_autochoke_);
         this->setNewtonMaxFailures(well_model_.param().network_newton_max_failures_);

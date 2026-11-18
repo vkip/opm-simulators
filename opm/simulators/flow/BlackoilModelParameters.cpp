@@ -119,7 +119,6 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     network_max_pressure_update_in_bars_ = Parameters::Get<Parameters::NetworkMaxPressureUpdateInBars<Scalar>>();
     network_pressure_update_secant_ = Parameters::Get<Parameters::NetworkPressureUpdateSecant>();
     network_solver_ = Parameters::Get<Parameters::NetworkSolver>();
-    network_analytic_jacobian_ = Parameters::Get<Parameters::NetworkAnalyticJacobian>();
     network_group_control_ = Parameters::Get<Parameters::NetworkGroupControl>();
     network_newton_max_failures_ = Parameters::Get<Parameters::NetworkNewtonMaxFailures>();
     network_autochoke_ = Parameters::Get<Parameters::NetworkAutochoke>();
@@ -288,12 +287,10 @@ void BlackoilModelParameters<Scalar>::registerParameters()
     Parameters::Register<Parameters::NetworkMaxPressureUpdateInBars<Scalar>>
         ("Maximum pressure update in the inner network pressure update iterations");
     Parameters::Register<Parameters::NetworkSolver>
-        ("How the injection networks are solved: fixedpoint relaxes the node pressures against "
-         "the wells, newton solves pressures and rates simultaneously and falls back to the "
-         "fixed point when it does not converge");
-    Parameters::Register<Parameters::NetworkAnalyticJacobian>
-        ("Assemble the network Jacobian from the VFP table derivatives instead of differencing "
-         "the residual (--network-solver=newton only)");
+        ("How the production and injection networks are solved: fixedpoint relaxes the node "
+         "pressures against the wells; newton solves node pressures and branch and well rates "
+         "simultaneously, with linear well inflows and a Jacobian assembled from the VFP table "
+         "derivatives, and falls back to the fixed point when it does not converge");
     Parameters::Register<Parameters::NetworkGroupControl>
         ("Let the network hold a group's injection total and place the split itself, so a well "
          "that hits its own limit is taken up by the others (--network-solver=newton only)");
@@ -313,7 +310,7 @@ void BlackoilModelParameters<Scalar>::registerParameters()
     Parameters::Register<Parameters::NetworkComplementarity>
         ("Close each production well's own limits -- rate, tubing, bhp -- with one complementarity "
          "row in the simultaneous network solve instead of an active set, so nothing switches "
-         "(--network-solver=newton with --network-analytic-jacobian=true).");
+         "(--network-solver=newton only).");
     Parameters::Register<Parameters::GasLiftNetworkResponse>
         ("Answer the gas lift optimiser's trial evaluations from the simultaneous network "
          "solve -- the well's rates with every node pressure responding to its lift gas -- "

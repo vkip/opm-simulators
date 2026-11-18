@@ -160,7 +160,6 @@ template<class Scalar>
 struct NetworkMaxPressureUpdateInBars { static constexpr Scalar value = 5.0; };
 struct NetworkPressureUpdateSecant { static constexpr auto value = "injection"; };
 struct NetworkSolver { static constexpr auto value = "fixedpoint"; };
-struct NetworkAnalyticJacobian { static constexpr bool value = false; };
 struct NetworkGroupControl { static constexpr bool value = false; };
 struct NetworkNewtonMaxFailures { static constexpr int value = 0; };
 struct NetworkAutochoke { static constexpr bool value = false; };
@@ -373,13 +372,11 @@ public:
     /// iterations instead of the damped one: "injection" (default), "all" or "none"
     std::string network_pressure_update_secant_;
 
-    /// How the injection networks are solved: "fixedpoint" (default) relaxes the
-    /// node pressures against the wells; "newton" solves pressures and rates
-    /// simultaneously, falling back to the fixed point when it does not converge.
+    /// How the production and injection networks are solved: "fixedpoint"
+    /// (default) relaxes the node pressures against the wells; "newton" solves
+    /// pressures and rates simultaneously with an analytic Jacobian, falling
+    /// back to the fixed point when it does not converge.
     std::string network_solver_;
-
-    /// Assemble the network Jacobian from the VFP table derivatives.
-    bool network_analytic_jacobian_;
 
     /// Let the network place the split of a group's injection total itself.
     bool network_group_control_;
