@@ -523,6 +523,17 @@ protected:
                         const SummaryState& summary_state,
                         WellStateType& well_state);
 
+    /// Whether a producer that is operable at its current THP limit (its
+    /// network node pressure) stays operable once the back-pressure of its own
+    /// rate on that node is included: bisects for the THP at which the node
+    /// pressure the network gives for the well's stable rate equals the THP.
+    /// True where it cannot be decided (no network THP function, no answer).
+    /// Expects the well solved at its trial bhp; restores its THP limit.
+    bool operableAgainstNetwork(const Simulator& simulator,
+                                const GroupStateHelperType& groupStateHelper,
+                                const SummaryState& summary_state,
+                                WellStateType& well_state);
+
     bool solveWellWithBhp(const Simulator& simulator,
                           const double dt,
                           const Scalar bhp,

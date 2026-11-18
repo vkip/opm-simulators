@@ -898,6 +898,7 @@ namespace Opm
                 // no intersection with ipr
                 const auto msg = fmt::format("estimateOperableBhp: Did not find operable BHP for well {}", this->name());
                 deferred_logger.debug(msg);
+                this->reopen_trial_failed_ = true;
                 // well can't operate using explicit fractions stop the well
                 // solve with zero rates
                 converged = solveWellWithZeroRate(simulator, dt, groupStateHelper, well_state);
@@ -911,6 +912,18 @@ namespace Opm
                 const Scalar bhp = std::max(bhp_target.value(),
                                             static_cast<Scalar>(prod_controls.bhp_limit));
                 solveWellWithBhp(simulator, dt, bhp, groupStateHelper, well_state);
+                if (this->param_.network_backpressure_operability_
+                    && !this->operableAgainstNetwork(simulator, groupStateHelper, summary_state, well_state)) {
+                    // Operable at the node pressure as it is, but not once its own
+                    // rate is on the node: opening it would only stop it again.
+                    this->reopen_trial_failed_ = true;
+                    converged = solveWellWithZeroRate(simulator, dt, groupStateHelper, well_state);
+                    this->stopWell();
+                    this->operability_status_.use_vfpexplicit = use_vfpexplicit;
+                    this->operability_status_.can_obtain_bhp_with_thp_limit = false;
+                    this->operability_status_.obey_thp_limit_under_bhp_limit = false;
+                    return converged;
+                }
                 this->operability_status_.use_vfpexplicit = use_vfpexplicit;
             }
         }
@@ -959,6 +972,7 @@ namespace Opm
                 simulator, dt, groupStateHelper, summary_state, well_state
             );
             if (!bhp_target.has_value()) {
+                this->reopen_trial_failed_ = true;
                 // solve with zero rate
                 // well can't operate using explicit fractions stop the well
                 converged = solveWellWithZeroRate(simulator, dt, groupStateHelper, well_state);
@@ -973,6 +987,15 @@ namespace Opm
                 solveWellWithBhp(
                     simulator, dt, bhp, groupStateHelper, well_state
                 );
+                if (this->param_.network_backpressure_operability_
+                    && !this->operableAgainstNetwork(simulator, groupStateHelper, summary_state, well_state)) {
+                    this->reopen_trial_failed_ = true;
+                    converged = solveWellWithZeroRate(simulator, dt, groupStateHelper, well_state);
+                    this->stopWell();
+                    this->operability_status_.can_obtain_bhp_with_thp_limit = false;
+                    this->operability_status_.obey_thp_limit_under_bhp_limit = false;
+                    return converged;
+                }
                 ws.thp = this->getTHPConstraint(summary_state);
                 const auto msg = fmt::format("Well {} did not converge, re-solving with explicit fractions for VFP caculations.", this->name());
                 deferred_logger.debug(msg);
@@ -990,6 +1013,93 @@ namespace Opm
         this->operability_status_.can_obtain_bhp_with_thp_limit = !this->wellIsStopped();
         this->operability_status_.obey_thp_limit_under_bhp_limit = !this->wellIsStopped();
         return converged;
+    }
+
+    template<typename TypeTag>
+    bool
+    WellInterface<TypeTag>::
+    operableAgainstNetwork(const Simulator& simulator,
+                           const GroupStateHelperType& groupStateHelper,
+                           const SummaryState& summary_state,
+                           WellStateType& well_state)
+    {
+        if (!this->isProducer() || !this->hasNetworkThpFunction()
+            || !this->wellHasTHPConstraints(summary_state)) {
+            return true;
+        }
+        auto& deferred_logger = groupStateHelper.deferredLogger();
+        auto& ws = well_state.well(this->index_of_well_);
+        this->updateIPRImplicit(simulator, groupStateHelper, well_state);
+        const auto ipr_a = ws.implicit_ipr_a;
+        const auto ipr_b = ws.implicit_ipr_b;
+        // The well state holds q = b*bhp - a, production negative.
+        auto rates_at = [&](const Scalar bhp) {
+            std::vector<Scalar> q(ipr_a.size());
+            for (std::size_t p = 0; p < q.size(); ++p) {
+                q[p] = std::min(ipr_b[p] * bhp - ipr_a[p], Scalar{0});
+            }
+            return q;
+        };
+        const auto saved_limit = this->getDynamicThpLimit();
+        auto stable_rates = [&](const Scalar thp) -> std::optional<std::vector<Scalar>> {
+            this->setDynamicThpLimit(thp);
+            auto rates = ws.surface_rates;
+            this->adaptRatesForVFP(rates);
+            const auto bhp = WellBhpThpCalculator(*this).estimateStableBhp(
+                well_state, this->well_ecl_, rates, this->getRefDensity(), summary_state);
+            if (!bhp.has_value()) {
+                return std::nullopt;
+            }
+            return rates_at(*bhp);
+        };
+        auto done = [&](const bool operable, const std::string& why) {
+            this->setDynamicThpLimit(saved_limit);
+            deferred_logger.debug(fmt::format("    {} back-pressure check: {} ({})", this->name(),
+                                              operable ? "operable in network" : "not operable in network", why));
+            return operable;
+        };
+
+        const Scalar thp0 = this->getTHPConstraint(summary_state);
+        const auto q0 = stable_rates(thp0);
+        if (!q0.has_value()) {
+            return done(true, "no stable point at the node pressure to start from");
+        }
+        const auto g0 = this->network_thp_function_(*q0);
+        if (!g0.has_value()) {
+            return done(true, "network response not available");
+        }
+        constexpr Scalar tol = 0.01 * unit::barsa;
+        if (*g0 <= thp0 + tol) {
+            return done(true, fmt::format("own back-pressure {:.3f} bar", (*g0 - thp0) / unit::barsa));
+        }
+        // h(thp) = network(q(thp)) - thp falls with thp: q(thp) falls, and drops
+        // to zero (h < 0) where the well has no stable point. h(thp0) > 0 and
+        // h(g0) <= 0. A sign change through a continuous h is an operating
+        // point; one across the jump to zero rate is not.
+        Scalar lo = thp0, hi = *g0;
+        for (int it = 0; it < 30 && hi - lo > tol; ++it) {
+            const Scalar mid = Scalar{0.5} * (lo + hi);
+            const auto q = stable_rates(mid);
+            if (!q.has_value()) {
+                hi = mid;
+                continue;
+            }
+            const auto g = this->network_thp_function_(*q);
+            if (!g.has_value()) {
+                return done(true, "network response not available");
+            }
+            (*g > mid ? lo : hi) = mid;
+        }
+        const auto ql = stable_rates(lo);
+        const auto gl = ql.has_value() ? this->network_thp_function_(*ql) : std::nullopt;
+        const Scalar gap = gl.has_value() ? *gl - lo : std::numeric_limits<Scalar>::max();
+        const bool operable = ql.has_value() && gl.has_value()
+            && gap <= std::max(Scalar{5} * tol, Scalar{0.1} * (*g0 - thp0));
+        return done(operable, fmt::format("node {:.3f} bar, own back-pressure {:.3f} bar, "
+                                          "self-consistent thp {:.3f} bar, gap {:.3f} bar",
+                                          thp0 / unit::barsa, (*g0 - thp0) / unit::barsa,
+                                          lo / unit::barsa,
+                                          gl.has_value() ? gap / unit::barsa : -1.0));
     }
 
     template<typename TypeTag>
@@ -1300,6 +1410,7 @@ namespace Opm
         // only use inner well iterations for the first newton iterations.
         const auto& iterCtx = simulator.problem().iterationContext();
         if (iterCtx.shouldRunInnerWellIterations(this->param_.max_niter_inner_well_iter_)) {
+            this->reopen_trial_failed_ = false;
             const auto& ws = well_state.well(this->indexOfWell());
             const bool nonzero_rate_original =
                 std::any_of(ws.surface_rates.begin(),
@@ -1339,7 +1450,12 @@ namespace Opm
 
             if (converged) {
                 const bool zero_target = this->wellUnderZeroRateTarget(groupStateHelper);
-                if (this->wellIsStopped() && !zero_target && nonzero_rate_original) {
+                if (this->wellIsStopped() && !zero_target && nonzero_rate_original
+                    && this->param_.keep_stopped_after_failed_reopen_ && this->reopen_trial_failed_) {
+                    // Its re-open trial in this solve found no operable point; re-opening it
+                    // would only repeat the trial in the next iteration.
+                    deferred_logger.debug("    " + this->name() + " is kept stopped: its re-open trial failed");
+                } else if (this->wellIsStopped() && !zero_target && nonzero_rate_original) {
                     // Well had non-zero rate, but was stopped during local well-solve. We re-open the well
                     // for the next global iteration, but if the zero rate persists, it will be stopped.
                     // This logic is introduced to prevent/ameliorate stopped/revived oscillations

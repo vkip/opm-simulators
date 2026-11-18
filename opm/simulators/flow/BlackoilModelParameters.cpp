@@ -125,6 +125,8 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     network_newton_damped_step_ = Parameters::Get<Parameters::NetworkNewtonDampedStep>();
     network_newton_bhp_resolve_ = Parameters::Get<Parameters::NetworkNewtonBhpResolve>();
     network_newton_skip_confirmation_ = Parameters::Get<Parameters::NetworkNewtonSkipConfirmation>();
+    network_backpressure_operability_ = Parameters::Get<Parameters::NetworkBackpressureOperability>();
+    keep_stopped_after_failed_reopen_ = Parameters::Get<Parameters::KeepStoppedAfterFailedReopen>();
     network_autochoke_ = Parameters::Get<Parameters::NetworkAutochoke>();
     network_autochoke_bracket_samples_ = Parameters::Get<Parameters::NetworkAutochokeBracketSamples>();
     network_complementarity_ = Parameters::Get<Parameters::NetworkComplementarity>();
@@ -321,6 +323,14 @@ void BlackoilModelParameters<Scalar>::registerParameters()
          "solution of every network tree, instead of running another sub-iteration to confirm "
          "that the re-solved wells reproduce it; what remains is left to the next Newton "
          "iteration (--network-solver=newton without --network-newton-damped-step)");
+    Parameters::Register<Parameters::NetworkBackpressureOperability>
+        ("When a stopped producer under a production network is tested for re-opening, "
+         "require an operable point at the THP that includes the back-pressure of its own "
+         "rate on its network node (the rest of the network held fixed), not only at the "
+         "current node pressure");
+    Parameters::Register<Parameters::KeepStoppedAfterFailedReopen>
+        ("Do not re-open a well that was stopped during its local solve for the next "
+         "Newton iteration if its re-open trial in that solve failed");
     Parameters::Register<Parameters::NetworkAutochoke>
         ("Solve autochoke nodes inside the simultaneous network solve: the node pressure "
          "becomes the group's common thp and is raised until the oil through the node meets "

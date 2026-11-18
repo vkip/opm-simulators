@@ -103,6 +103,23 @@ update(const bool mandatory_network_balance,
 
     const auto& comm = well_model_.simulator().vanguard().grid().comm();
 
+    if (well_model_.param().network_backpressure_operability_) {
+        // Let each producer under the production network see what its own rate
+        // does to its node pressure, for its operability checks.
+        const auto& prod_network = well_model_.schedule()[episodeIdx].network();
+        for (const auto& well : well_model_) {
+            if (well->isProducer() && prod_network.active()
+                && prod_network.has_node(well->wellEcl().groupName())) {
+                const std::string name = well->name();
+                well->setNetworkThpFunction([this, name](const std::vector<Scalar>& rates) {
+                    return this->wellBackpressureThp(name, rates);
+                });
+            } else {
+                well->setNetworkThpFunction({});
+            }
+        }
+    }
+
     // network related
     Scalar network_imbalance = 0.0;
     bool more_network_update = false;

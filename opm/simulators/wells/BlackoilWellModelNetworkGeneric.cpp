@@ -1111,6 +1111,114 @@ predictedWellState(const std::string& well,
 }
 
 template<typename Scalar, typename IndexTraits>
+std::optional<Scalar>
+BlackoilWellModelNetworkGeneric<Scalar, IndexTraits>::
+wellBackpressureThp(const std::string& well,
+                    const std::vector<Scalar>& surface_rates) const
+{
+    const auto ref_it = this->backpressure_ref_.find(well);
+    if (ref_it == this->backpressure_ref_.end() || this->backpressure_step_ < 0) {
+        return std::nullopt;
+    }
+    const auto& ref = ref_it->second;
+    const auto& network = well_model_.schedule()[this->backpressure_step_].network();
+    if (!network.active() || !network.has_node(ref.node)) {
+        return std::nullopt;
+    }
+    const auto& pressures = this->nodePressures(details::NetworkDomain::Production);
+    const auto& branches = this->branchData(details::NetworkDomain::Production);
+    const auto& invalid = this->invalidNodes(details::NetworkDomain::Production);
+
+    // The well's rate change at its leaf, network-weighted, in the canonical
+    // phase order of the pressure computation's inflow vectors.
+    const auto& pu = well_model_.phaseUsage();
+    const std::array<int, 3> canon{IndexTraits::waterPhaseIdx, IndexTraits::oilPhaseIdx,
+                                   IndexTraits::gasPhaseIdx};
+    std::vector<Scalar> delta(3, Scalar{0});
+    for (int ph = 0; ph < 3; ++ph) {
+        const int a = pu.canonicalToActivePhaseIdx(canon[ph]);
+        const Scalar q = (a >= 0 && a < static_cast<int>(surface_rates.size()))
+            ? std::max(-surface_rates[a], Scalar{0}) : Scalar{0};
+        delta[canon[ph]] = ref.efficiency * (q - ref.rates[ph]);
+    }
+
+    // The chain from the leaf up to the uppermost node whose pressure is held:
+    // a fixed-pressure node, or one a reservoir coupling master imposes.
+    std::vector<std::string> chain{ref.node};
+    while (true) {
+        const auto& name = chain.back();
+        if (invalid.count(name) > 0 || network.node(name).as_choke()) {
+            return std::nullopt;     // no valid pressure, or set by the autochoke
+        }
+        if (network.node(name).terminal_pressure().has_value()
+            || this->node_pressure_overrides_.count(name) > 0) {
+            break;
+        }
+        const auto up = network.uptree_branch(name);
+        if (!up) {
+            return std::nullopt;
+        }
+        chain.push_back(up->uptree_node());
+    }
+    const auto top = pressures.find(chain.back());
+    const auto leaf = pressures.find(ref.node);
+    if (top == pressures.end() || leaf == pressures.end()) {
+        return std::nullopt;
+    }
+    if (chain.size() == 1) {
+        return leaf->second;         // the leaf itself is held
+    }
+
+    using Calc = NetworkVfpPressureCalculator<Scalar, IndexTraits, VFPProdProperties<Scalar>>;
+    // The change reaches each branch scaled by the efficiencies of the nodes
+    // below it, as the pressure computation accumulates inflows.
+    std::vector<Scalar> scale(chain.size(), Scalar{1});
+    for (std::size_t i = 1; i < chain.size(); ++i) {
+        scale[i] = scale[i - 1] * network.node(chain[i - 1]).efficiency();
+    }
+    // The leaf pressure down the chain for the branch rates with the change
+    // scaled by `factor`: 0 reproduces the evaluation as it was, 1 adds this
+    // well's change. Only the difference is used: the stored node pressure
+    // the well sees is the relaxed (damped or bracketed) one, not the one the
+    // branch rates give, and the check is about this well's own effect.
+    auto leafPressure = [&](const Scalar factor) -> std::optional<Scalar> {
+    Scalar p = top->second;
+    for (std::size_t k = chain.size() - 1; k-- > 0;) {
+        const auto& name = chain[k];
+        const auto branch = network.uptree_branch(name);
+        const auto bd = branches.find(name);
+        if (!branch || bd == branches.end()) {
+            return std::nullopt;
+        }
+        if (!branch->vfp_table().has_value()) {
+            continue;                // no pressure loss (9999)
+        }
+        std::vector<Scalar> rates(3, Scalar{0});
+        rates[IndexTraits::oilPhaseIdx] = bd->second.oil_rate;
+        rates[IndexTraits::waterPhaseIdx] = bd->second.water_rate;
+        rates[IndexTraits::gasPhaseIdx] = bd->second.gas_rate;
+        for (int i = 0; i < 3; ++i) {
+            rates[i] = std::max(rates[i] + factor * scale[k] * delta[i], Scalar{0});
+        }
+        Calc::prepareRates(rates);
+        const auto res = Calc::compute(*well_model_.getVFPProperties().getProd(), *branch->vfp_table(),
+                                       rates, p, *branch, well_model_.schedule().getUnits());
+        if (!res.valid) {
+            return std::nullopt;
+        }
+        p = res.pressure;
+    }
+    return std::optional<Scalar>{p};
+    };
+    const auto with = leafPressure(Scalar{1});
+    const auto without = leafPressure(Scalar{0});
+    if (!with.has_value() || !without.has_value()) {
+        return std::nullopt;
+    }
+    return leaf->second + (*with - *without);
+}
+
+template<typename Scalar, typename IndexTraits>
 std::optional<std::array<Scalar, 4>>
 BlackoilWellModelNetworkGeneric<Scalar, IndexTraits>::
 gasLiftTrial(const std::string& well, const Scalar alq) const
@@ -1186,6 +1294,32 @@ updatePressures(const int reportStepIdx,
 
     this->syncProductionDomainState_();
     const auto previous_node_pressures = this->domain_node_pressures_;
+
+    // The rates the production branch data below are computed with, for the
+    // back-pressure a single well's rate change puts on its node.
+    this->backpressure_ref_.clear();
+    this->backpressure_step_ = reportStepIdx;
+    {
+        const auto& pu = well_model_.phaseUsage();
+        const std::array<int, 3> canon{IndexTraits::waterPhaseIdx, IndexTraits::oilPhaseIdx,
+                                       IndexTraits::gasPhaseIdx};
+        const auto& prod_network = well_model_.schedule()[reportStepIdx].network();
+        for (const auto& well : well_model_.genericWells()) {
+            if (!well->isProducer() || !prod_network.has_node(well->wellEcl().groupName())) {
+                continue;
+            }
+            const auto& ws = well_model_.wellState()[well->indexOfWell()];
+            BackpressureRef ref{well->wellEcl().groupName(),
+                                static_cast<Scalar>(well->wellEcl().getEfficiencyFactor(/*network=*/true))
+                                    * ws.efficiency_scaling_factor,
+                                {}};
+            for (int ph = 0; ph < 3; ++ph) {
+                const int a = pu.canonicalToActivePhaseIdx(canon[ph]);
+                ref.rates[ph] = (a >= 0) ? std::max(-ws.surface_rates[a], Scalar{0}) : Scalar{0};
+            }
+            this->backpressure_ref_.emplace(well->name(), std::move(ref));
+        }
+    }
 
     // Per domain and leaf: the lowest wellhead pressure of the wells that are open,
     // flowing and not on THP control. The leaf rate does not depend on the node

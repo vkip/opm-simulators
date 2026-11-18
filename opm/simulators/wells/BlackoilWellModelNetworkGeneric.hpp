@@ -253,6 +253,16 @@ public:
     bool predictedWellState(const std::string& well,
                             std::vector<Scalar>& surface_rates,
                             Scalar& bhp) const;
+
+    /// The THP of a producer's network node if the producer's rates were
+    /// \p surface_rates (opm's signed active-phase rates) and everything
+    /// else in the production network stayed as in the last pressure update:
+    /// the stored node pressure plus the change in the leaf pressure, computed
+    /// down the branch chain from the uppermost fixed-pressure node, that this
+    /// well's rate change alone causes. nullopt where it cannot be evaluated (no snapshot of the well,
+    /// an autochoke or invalid node on the chain, a missing branch).
+    std::optional<Scalar> wellBackpressureThp(const std::string& well,
+                                              const std::vector<Scalar>& surface_rates) const;
     /// Production network solves so far: count, failures, seconds.
     std::tuple<long, long, double> newtonSolveStats() const
     { return {newton_solves_, newton_failed_solves_, newton_solve_time_}; }
@@ -425,6 +435,12 @@ protected:
     /// at once: every rank solves the system, so a failing solve costs all of them.
     NetworkSolve::Parameters<Scalar> solveParams() const
     { return {Scalar{1e-2}, newton_max_iterations_, 8}; }
+    /// Producers' network-weighted rates (water, oil, gas; production
+    /// positive) and leaf node at the last production pressure update: the
+    /// rates the branch data were computed with.
+    struct BackpressureRef { std::string node; Scalar efficiency; std::array<Scalar, 3> rates; };
+    std::map<std::string, BackpressureRef> backpressure_ref_;
+    int backpressure_step_ = -1;
     mutable std::map<std::string, int> newton_step_failures_;
     mutable double newton_solve_time_ = 0.0;
     mutable long newton_solves_ = 0;

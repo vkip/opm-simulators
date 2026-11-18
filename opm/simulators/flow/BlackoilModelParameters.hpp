@@ -166,6 +166,8 @@ struct NetworkNewtonMaxIterations { static constexpr int value = 50; };
 struct NetworkNewtonDampedStep { static constexpr bool value = false; };
 struct NetworkNewtonBhpResolve { static constexpr bool value = true; };
 struct NetworkNewtonSkipConfirmation { static constexpr bool value = false; };
+struct NetworkBackpressureOperability { static constexpr bool value = false; };
+struct KeepStoppedAfterFailedReopen { static constexpr bool value = false; };
 struct NetworkAutochoke { static constexpr bool value = false; };
 struct NetworkAutochokeBracketSamples { static constexpr int value = 300; };
 struct NetworkComplementarity { static constexpr bool value = false; };
@@ -399,6 +401,13 @@ public:
     /// In the network sub-iterations, solve each THP well that the network
     /// solution has on its tubing at the BHP from that solution.
     bool network_newton_bhp_resolve_;
+    /// Check a producer's re-opening against the back-pressure its own rate
+    /// puts on its network node.
+    bool network_backpressure_operability_;
+
+    /// Do not re-open a well, stopped during its local solve, whose re-open
+    /// trial in the same solve failed.
+    bool keep_stopped_after_failed_reopen_;
 
     /// End a network balance after the wells are re-solved at a converged
     /// simultaneous solution, without a sub-iteration to confirm it.

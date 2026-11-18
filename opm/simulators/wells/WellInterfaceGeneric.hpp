@@ -33,6 +33,7 @@
 #include <opm/simulators/wells/WellIndexFracture.hpp>
 
 #include <array>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -119,6 +120,13 @@ public:
     void setRepRadiusPerfLength();
     void setWsolvent(const Scalar wsolvent);
     void setDynamicThpLimit(const Scalar thp_limit);
+    /// The THP the well's network node would have if the well produced the
+    /// given rates (opm's signed active-phase rates), the rest of the network
+    /// held fixed; nullopt where it cannot be evaluated. Unset for wells not
+    /// under a production network or when the check is off.
+    using NetworkThpFunction = std::function<std::optional<Scalar>(const std::vector<Scalar>&)>;
+    void setNetworkThpFunction(NetworkThpFunction f) { network_thp_function_ = std::move(f); }
+    bool hasNetworkThpFunction() const { return static_cast<bool>(network_thp_function_); }
     std::optional<Scalar> getDynamicThpLimit() const;
     void setDynamicThpLimit(const std::optional<Scalar> thp_limit);
     void updatePerforatedCell(std::vector<bool>& is_cell_perforated);
@@ -567,6 +575,9 @@ protected:
     Scalar gravity_;
     Scalar wsolvent_;
     std::optional<Scalar> dynamic_thp_limit_;
+    NetworkThpFunction network_thp_function_;
+    /// Set when a re-open trial of the well failed in the current local solve.
+    bool reopen_trial_failed_ = false;
 
     // recording the multiplier calculate from the keyword WINJMULT during the time step
     mutable std::vector<Scalar> inj_multiplier_;
