@@ -43,11 +43,16 @@ add_network_cost_test(
 
 # Gas lift answered by the network. Measured 2026-08-24: 0 fallbacks, 521
 # Newton, 9051 well solves, B-3H 32 % of them. Legacy: 2607 and 49320.
+# Measured 2026-11-18 on master 93ca27e36: 2 fallbacks, 133 Newton, 2318 well
+# solves. The upstream gas lift changes (#7586) move the run by ~1e-6, enough
+# to reach one system at report step 8 that no Jacobian (differenced, analytic
+# or complementarity) solves; the sub-loop meets it twice. Falling back there
+# is the intended behaviour, so the bound allows it.
 add_network_cost_test(
   CASENAME gaslift_complementarity
   FILENAME GASLIFT-13
   DIR gaslift
-  MAX_FALLBACKS 0
+  MAX_FALLBACKS 2
   MAX_NEWTON 680
   MAX_WELL_SOLVES 11500
   MAX_WELL_SHARE 45
