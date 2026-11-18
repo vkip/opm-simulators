@@ -152,6 +152,12 @@ update(const bool mandatory_network_balance,
         this->useNetworkGroupControl(well_model_.param().network_group_control_);
         this->useNetworkAutochoke(well_model_.param().network_autochoke_);
         this->setNewtonMaxFailures(well_model_.param().network_newton_max_failures_);
+        this->setNewtonMaxIterations(well_model_.param().network_newton_max_iterations_);
+        this->useNewtonFullStep(!well_model_.param().network_newton_damped_step_);
+        // The BHP from the solution belongs to the THP the well is given only
+        // when the wells get the solved pressures at once.
+        const bool bhp_resolve = solver_mode == "newton" && this->newtonFullStep()
+            && well_model_.param().network_newton_bhp_resolve_;
         this->useNetworkComplementarity(well_model_.param().network_complementarity_);
         this->useGasLiftNetworkResponse(well_model_.param().gaslift_network_response_);
         this->dumpNetworkFailuresTo(well_model_.param().network_dump_failures_);
@@ -229,10 +235,31 @@ update(const bool mandatory_network_balance,
                     }
                     const auto it = this->nodePressures(*domain).find(well->wellEcl().groupName());
                     if (it != this->nodePressures(*domain).end()) {
-                        well->prepareWellBeforeAssembling(well_model_.simulator(),
-                                                          dt,
-                                                          well_model_.groupStateHelper(),
-                                                          well_model_.wellState());
+                        // A THP producer the network solution has on its tubing is
+                        // solved at the solution's BHP: its THP control would
+                        // land there too (the system and the well model agree),
+                        // at more cost. The well solves after the balance
+                        // restore THP control.
+                        bool solved = false;
+                        if (bhp_resolve && well->isProducer()
+                            && well_model_.wellState().well(well->indexOfWell()).production_cmode
+                                   == Well::ProducerCMode::THP) {
+                            auto& ws = well_model_.wellState().well(well->indexOfWell());
+                            std::vector<Scalar> rates(ws.surface_rates.begin(), ws.surface_rates.end());
+                            Scalar bhp = ws.bhp;
+                            if (this->predictedWellState(well->name(), rates, bhp)) {
+                                solved = well->solveWellAtFixedBhp(well_model_.simulator(), dt, bhp,
+                                                                   well_model_.groupStateHelper(),
+                                                                   well_model_.wellState());
+                                ws.thp = well->getTHPConstraint(well_model_.summaryState());
+                            }
+                        }
+                        if (!solved) {
+                            well->prepareWellBeforeAssembling(well_model_.simulator(),
+                                                              dt,
+                                                              well_model_.groupStateHelper(),
+                                                              well_model_.wellState());
+                        }
                         // Option B: after re-solving at the current network THP, update
                         // ws.well_potentials for injection wells.  The rate_less_than_potential
                         // check in WellConstraints::activeInjectionConstraint compares current

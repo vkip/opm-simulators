@@ -117,14 +117,6 @@ namespace details {
     }
 } // namespace details
 
-/// What the simulator asks of a network solve. The tolerance is on the scaled
-/// residual, so it is dimensionless; 50 iterations is well past where a solve
-/// that is going to converge has, and past it the relaxed update takes over.
-/// A solve whose residual has not improved for 8 iterations with a fixed active
-/// set is handed back at once: every rank solves the system, so a failing
-/// solve costs all of them.
-template<class Scalar>
-constexpr NetworkSolve::Parameters<Scalar> kNetworkSolveParams{1e-2, 50, 8};
 
 
 namespace {
@@ -518,7 +510,7 @@ newtonInjectionNodePressures(const Network::ExtNetwork& network,
         }
     }
 
-    const auto result = NetworkSolve::solve(system, guess, kNetworkSolveParams<Scalar>, NetworkSolve::FullStep{});
+    const auto result = NetworkSolve::solve(system, guess, this->solveParams(), NetworkSolve::FullStep{});
     if (!result.converged && !this->network_dump_prefix_.empty()) {
         // Everything the solve worked from, so it can be replayed in the bench
         // against the same tables without a simulator.
@@ -1007,7 +999,7 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
 
     Dune::Timer solve_timer;
     solve_timer.start();
-    const auto result = NetworkSolve::solve(system, guess, kNetworkSolveParams<Scalar>, NetworkSolve::FullStep{});
+    const auto result = NetworkSolve::solve(system, guess, this->solveParams(), NetworkSolve::FullStep{});
     this->newton_solve_time_ += solve_timer.stop();
     ++this->newton_solves_;
     if (!result.converged) {
@@ -1068,10 +1060,54 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
             this->network_shut_.insert(system.wells()[w].name);
         }
     }
+    std::map<std::string, std::pair<std::array<Scalar, 3>, Scalar>> predicted;
+    if (result.well_phase_rates.size() == static_cast<std::size_t>(system.numWells())
+        && result.well_bhp.size() == static_cast<std::size_t>(system.numWells())) {
+        for (int w = 0; w < system.numWells(); ++w) {
+            predicted[system.wells()[w].name] = {result.well_phase_rates[w], result.well_bhp[w]};
+        }
+    }
     last_production_solve_[root.name()] = SolvedTree{
         std::move(inputs), pressures, order,
-        std::make_shared<const NetworkSolve::ProductionSystem<Scalar>>(system)};
+        std::make_shared<const NetworkSolve::ProductionSystem<Scalar>>(system), std::move(predicted)};
     return pressures;
+}
+
+template<typename Scalar, typename IndexTraits>
+bool
+BlackoilWellModelNetworkGeneric<Scalar, IndexTraits>::
+predictedWellState(const std::string& well,
+                   std::vector<Scalar>& surface_rates,
+                   Scalar& bhp) const
+{
+    const auto& pu = well_model_.phaseUsage();
+    const std::array<int, 3> canon{IndexTraits::waterPhaseIdx, IndexTraits::oilPhaseIdx,
+                                   IndexTraits::gasPhaseIdx};
+    for (const auto& [root, tree] : last_production_solve_) {
+        const auto it = tree.wells.find(well);
+        if (it == tree.wells.end()) {
+            continue;
+        }
+        // Only a well the solution has on its tubing: that is the one whose
+        // state the thp it is given determines.
+        const int w = tree.system ? tree.system->wellIndex(well) : -1;
+        if (w < 0 || tree.system->control(w) != NetworkSolve::ProductionSystem<Scalar>::Control::Thp) {
+            return false;
+        }
+        const auto& [q, b] = it->second;
+        if (!(b > Scalar{0}) || !(q[0] + q[1] + q[2] > Scalar{0})) {
+            return false;
+        }
+        for (int ph = 0; ph < 3; ++ph) {
+            const int a = pu.canonicalToActivePhaseIdx(canon[ph]);
+            if (a >= 0 && a < static_cast<int>(surface_rates.size())) {
+                surface_rates[a] = -q[ph];
+            }
+        }
+        bhp = b;
+        return true;
+    }
+    return false;
 }
 
 template<typename Scalar, typename IndexTraits>
@@ -1102,7 +1138,7 @@ gasLiftTrial(const std::string& well, const Scalar alq) const
                 guess[n] = it->second;
             }
         }
-        const auto result = NetworkSolve::solve(trial, guess, kNetworkSolveParams<Scalar>, NetworkSolve::FullStep{});
+        const auto result = NetworkSolve::solve(trial, guess, this->solveParams(), NetworkSolve::FullStep{});
         if (!result.converged) {
             // A failed trial falls back to the well-solve oracle silently, which
             // changes the optimiser's path without a trace; leave one.
@@ -1314,17 +1350,26 @@ updatePressures(const int reportStepIdx,
                 // the network gives for the resulting rates.
                 const auto pressure = previous_domain_pressures.at(name);
                 const bool valid = invalid.count(name) == 0;
-                // A node a simultaneous solve has placed is at its fixed point,
-                // but the wells still need the step to it bounded -- handing
-                // them the whole jump at once is how a well near its tubing
-                // limit gets shut as inoperable in a transient. The bracketing
-                // update lands in a couple of sub-iterations; the damped one
-                // creeps ten per cent at a time and runs out the cap.
+                // A node a simultaneous solve has placed is at its fixed point.
+                // By default the wells get its pressure at once. With
+                // --network-newton-damped-step the step to it is bounded by the
+                // bracketing update instead, which lands in a couple of
+                // sub-iterations (the damped one creeps ten per cent at a time
+                // and runs out the cap). The bounded step was needed while the
+                // system and the well model disagreed on gas wells' inflow; with
+                // negligible phases dropped from the inflow they agree to 0.02%.
                 const bool solved_here = solved_nodes[details::domainIndex(network.domain)].count(name) > 0;
                 const bool secant_here = use_secant
                     && (secant_for_production || solved_here
                         || network.domain != details::NetworkDomain::Production);
-                if (secant_here) {
+                if (this->newton_full_step_ && solved_here && valid
+                    && network.domain == details::NetworkDomain::Production) {
+                    // The simultaneous solve has placed this node, consistently
+                    // with the wells' inflow and tubing: give the wells its
+                    // pressure at once. Injection networks keep the bounded
+                    // step their bracketing update was tuned on.
+                    network_imbalance = std::max(network_imbalance, std::abs(computed_pressure - pressure));
+                } else if (secant_here) {
                     auto& updater = updaters[name];
                     const auto& floors = plateau_floor[details::domainIndex(network.domain)];
                     std::optional<Scalar> floor;

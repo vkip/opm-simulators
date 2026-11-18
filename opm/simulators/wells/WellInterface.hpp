@@ -258,6 +258,15 @@ public:
                                                    const GroupStateHelperType& groupStateHelper,
                                                    std::vector<Scalar>& well_flux) const = 0;
 
+    /// Solve the well at a fixed bhp, keeping its control modes; for the
+    /// network sub-iterations, where the bhp comes from the network solve.
+    bool solveWellAtFixedBhp(const Simulator& simulator,
+                             const double dt,
+                             const Scalar bhp,
+                             const GroupStateHelperType& groupStateHelper,
+                             WellStateType& well_state)
+    { return this->solveWellWithBhp(simulator, dt, bhp, groupStateHelper, well_state); }
+
     bool wellUnderZeroRateTarget(const GroupStateHelperType& groupStateHelper) const;
 
     bool stoppedOrZeroRateTarget(const GroupStateHelperType& groupStateHelper) const;

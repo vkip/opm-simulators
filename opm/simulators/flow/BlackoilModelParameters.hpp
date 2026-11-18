@@ -161,7 +161,10 @@ struct NetworkMaxPressureUpdateInBars { static constexpr Scalar value = 5.0; };
 struct NetworkPressureUpdateSecant { static constexpr auto value = "injection"; };
 struct NetworkSolver { static constexpr auto value = "fixedpoint"; };
 struct NetworkGroupControl { static constexpr bool value = false; };
-struct NetworkNewtonMaxFailures { static constexpr int value = 0; };
+struct NetworkNewtonMaxFailures { static constexpr int value = 3; };
+struct NetworkNewtonMaxIterations { static constexpr int value = 50; };
+struct NetworkNewtonDampedStep { static constexpr bool value = false; };
+struct NetworkNewtonBhpResolve { static constexpr bool value = true; };
 struct NetworkAutochoke { static constexpr bool value = false; };
 struct NetworkAutochokeBracketSamples { static constexpr int value = 300; };
 struct NetworkComplementarity { static constexpr bool value = false; };
@@ -384,6 +387,17 @@ public:
     /// Failed production network solves per tree and time step after which the
     /// rest of the step uses the relaxed update (--network-solver=newton; 0: no limit).
     int network_newton_max_failures_;
+
+    /// Maximum Newton iterations in one simultaneous network solve.
+    int network_newton_max_iterations_;
+
+    /// Bound the step from the previous node pressures to the solved ones
+    /// (bracketing/secant update) instead of taking the solved pressures.
+    bool network_newton_damped_step_;
+
+    /// In the network sub-iterations, solve each THP well that the network
+    /// solution has on its tubing at the BHP from that solution.
+    bool network_newton_bhp_resolve_;
 
     /// Path prefix for writing network systems that fail to converge; empty off.
     std::string network_dump_failures_;

@@ -121,6 +121,9 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     network_solver_ = Parameters::Get<Parameters::NetworkSolver>();
     network_group_control_ = Parameters::Get<Parameters::NetworkGroupControl>();
     network_newton_max_failures_ = Parameters::Get<Parameters::NetworkNewtonMaxFailures>();
+    network_newton_max_iterations_ = Parameters::Get<Parameters::NetworkNewtonMaxIterations>();
+    network_newton_damped_step_ = Parameters::Get<Parameters::NetworkNewtonDampedStep>();
+    network_newton_bhp_resolve_ = Parameters::Get<Parameters::NetworkNewtonBhpResolve>();
     network_autochoke_ = Parameters::Get<Parameters::NetworkAutochoke>();
     network_autochoke_bracket_samples_ = Parameters::Get<Parameters::NetworkAutochokeBracketSamples>();
     network_complementarity_ = Parameters::Get<Parameters::NetworkComplementarity>();
@@ -298,6 +301,20 @@ void BlackoilModelParameters<Scalar>::registerParameters()
         ("Number of failed simultaneous production network solves of a tree within one time "
          "step after which the rest of the step uses the relaxed update directly "
          "(--network-solver=newton only; 0: no limit)");
+    Parameters::Register<Parameters::NetworkNewtonMaxIterations>
+        ("Maximum Newton iterations in one simultaneous network solve; a solve that has not "
+         "converged by then is handed back to the relaxed update for that sub-iteration "
+         "(--network-solver=newton only)");
+    Parameters::Register<Parameters::NetworkNewtonDampedStep>
+        ("Bound the step from the previous production node pressures to the ones the "
+         "simultaneous solve found with the bracketing/secant update, instead of giving the "
+         "wells the solved pressures at once; injection networks always use the bounded step "
+         "(--network-solver=newton only)");
+    Parameters::Register<Parameters::NetworkNewtonBhpResolve>
+        ("In the network sub-iterations, solve a THP-controlled producer that the simultaneous "
+         "solution has on its tubing at the BHP from that solution, instead of with its own THP "
+         "control; the well solves after the network balance restore THP control "
+         "(--network-solver=newton without --network-newton-damped-step)");
     Parameters::Register<Parameters::NetworkAutochoke>
         ("Solve autochoke nodes inside the simultaneous network solve: the node pressure "
          "becomes the group's common thp and is raised until the oil through the node meets "

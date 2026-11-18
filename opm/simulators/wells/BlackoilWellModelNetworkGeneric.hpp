@@ -237,6 +237,18 @@ public:
     void useNetworkGroupControl(const bool on) { network_group_control_ = on; }
     void useNetworkAutochoke(const bool on) { network_autochoke_ = on; }
     void setNewtonMaxFailures(const int n) { newton_max_failures_ = n; }
+    void setNewtonMaxIterations(const int n) { newton_max_iterations_ = n; }
+    /// Give the wells the solved production node pressures at once (default),
+    /// rather than a step bounded by the bracketing/secant update. Injection
+    /// networks always use the bounded step.
+    void useNewtonFullStep(const bool on) { newton_full_step_ = on; }
+    bool newtonFullStep() const { return newton_full_step_; }
+
+    /// The last production solve's rates (opm's signed active-phase rates) and
+    /// bhp for a well it has on THP control; false if no solve covers it so.
+    bool predictedWellState(const std::string& well,
+                            std::vector<Scalar>& surface_rates,
+                            Scalar& bhp) const;
     /// Production network solves so far: count, failures, seconds.
     std::tuple<long, long, double> newtonSolveStats() const
     { return {newton_solves_, newton_failed_solves_, newton_solve_time_}; }
@@ -386,6 +398,8 @@ protected:
         std::map<std::string, Scalar> pressures;
         std::vector<std::string> order;                     // node names by index
         std::shared_ptr<const NetworkSolve::ProductionSystem<Scalar>> system;
+        /// Per well: water/oil/gas rates (production positive) and bhp at the solution.
+        std::map<std::string, std::pair<std::array<Scalar, 3>, Scalar>> wells;
     };
     mutable std::map<std::string, SolvedTree> last_production_solve_;
     /// Wells the complementarity solve shut earlier in this report step. A
@@ -396,6 +410,15 @@ protected:
     /// Fail fast: after this many failed production solves of a tree in one
     /// time step, the rest of the step uses the relaxed update (0: no limit).
     int newton_max_failures_ = 0;
+    int newton_max_iterations_ = 50;
+    bool newton_full_step_ = true;
+    /// What the simulator asks of a network solve. The tolerance is on the
+    /// scaled residual, so it is dimensionless; past the iteration limit the
+    /// relaxed update takes over for that sub-iteration. A solve whose residual
+    /// has not improved for 8 iterations with a fixed active set is handed back
+    /// at once: every rank solves the system, so a failing solve costs all of them.
+    NetworkSolve::Parameters<Scalar> solveParams() const
+    { return {Scalar{1e-2}, newton_max_iterations_, 8}; }
     mutable std::map<std::string, int> newton_step_failures_;
     mutable double newton_solve_time_ = 0.0;
     mutable long newton_solves_ = 0;
