@@ -165,6 +165,7 @@ struct NetworkNewtonMaxFailures { static constexpr int value = 3; };
 struct NetworkNewtonMaxIterations { static constexpr int value = 50; };
 struct NetworkNewtonDampedStep { static constexpr bool value = false; };
 struct NetworkNewtonBhpResolve { static constexpr bool value = true; };
+struct NetworkNewtonSkipConfirmation { static constexpr bool value = false; };
 struct NetworkAutochoke { static constexpr bool value = false; };
 struct NetworkAutochokeBracketSamples { static constexpr int value = 300; };
 struct NetworkComplementarity { static constexpr bool value = false; };
@@ -398,6 +399,10 @@ public:
     /// In the network sub-iterations, solve each THP well that the network
     /// solution has on its tubing at the BHP from that solution.
     bool network_newton_bhp_resolve_;
+
+    /// End a network balance after the wells are re-solved at a converged
+    /// simultaneous solution, without a sub-iteration to confirm it.
+    bool network_newton_skip_confirmation_;
 
     /// Path prefix for writing network systems that fail to converge; empty off.
     std::string network_dump_failures_;

@@ -158,6 +158,8 @@ update(const bool mandatory_network_balance,
         // when the wells get the solved pressures at once.
         const bool bhp_resolve = solver_mode == "newton" && this->newtonFullStep()
             && well_model_.param().network_newton_bhp_resolve_;
+        const bool skip_confirmation = solver_mode == "newton" && this->newtonFullStep()
+            && well_model_.param().network_newton_skip_confirmation_;
         this->useNetworkComplementarity(well_model_.param().network_complementarity_);
         this->useGasLiftNetworkResponse(well_model_.param().gaslift_network_response_);
         this->dumpNetworkFailuresTo(well_model_.param().network_dump_failures_);
@@ -288,6 +290,14 @@ update(const bool mandatory_network_balance,
             }
             resolve(/*injectors=*/true);
             well_model_.updateAndCommunicateGroupData(episodeIdx, /*update_wellgrouptarget*/ true);
+            if (skip_confirmation && this->lastUpdateSolvedByNewton()) {
+                // The wells now sit at a converged simultaneous solution; what
+                // the re-solves left over is taken up by the next Newton
+                // iteration instead of another sub-iteration here.
+                more_network_sub_update = false;
+                network_imbalance = 0.0;
+                break;
+            }
         }
         more_network_update = more_network_sub_update || well_group_thp_updated;
         if (solver_mode == "newton" && comm.rank() == 0) {

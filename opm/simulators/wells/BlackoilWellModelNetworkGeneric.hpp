@@ -243,6 +243,10 @@ public:
     /// networks always use the bounded step.
     void useNewtonFullStep(const bool on) { newton_full_step_ = on; }
     bool newtonFullStep() const { return newton_full_step_; }
+    /// Whether the last pressure update solved every network tree it was
+    /// offered simultaneously (and was offered at least one).
+    bool lastUpdateSolvedByNewton() const
+    { return newton_trees_attempted_ > 0 && newton_trees_solved_ == newton_trees_attempted_; }
 
     /// The last production solve's rates (opm's signed active-phase rates) and
     /// bhp for a well it has on THP control; false if no solve covers it so.
@@ -411,6 +415,8 @@ protected:
     /// time step, the rest of the step uses the relaxed update (0: no limit).
     int newton_max_failures_ = 0;
     int newton_max_iterations_ = 50;
+    int newton_trees_attempted_ = 0;
+    int newton_trees_solved_ = 0;
     bool newton_full_step_ = true;
     /// What the simulator asks of a network solve. The tolerance is on the
     /// scaled residual, so it is dimensionless; past the iteration limit the

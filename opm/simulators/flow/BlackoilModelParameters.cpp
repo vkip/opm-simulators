@@ -124,6 +124,7 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     network_newton_max_iterations_ = Parameters::Get<Parameters::NetworkNewtonMaxIterations>();
     network_newton_damped_step_ = Parameters::Get<Parameters::NetworkNewtonDampedStep>();
     network_newton_bhp_resolve_ = Parameters::Get<Parameters::NetworkNewtonBhpResolve>();
+    network_newton_skip_confirmation_ = Parameters::Get<Parameters::NetworkNewtonSkipConfirmation>();
     network_autochoke_ = Parameters::Get<Parameters::NetworkAutochoke>();
     network_autochoke_bracket_samples_ = Parameters::Get<Parameters::NetworkAutochokeBracketSamples>();
     network_complementarity_ = Parameters::Get<Parameters::NetworkComplementarity>();
@@ -315,6 +316,11 @@ void BlackoilModelParameters<Scalar>::registerParameters()
          "solution has on its tubing at the BHP from that solution, instead of with its own THP "
          "control; the well solves after the network balance restore THP control "
          "(--network-solver=newton without --network-newton-damped-step)");
+    Parameters::Register<Parameters::NetworkNewtonSkipConfirmation>
+        ("End a network balance once the wells have been re-solved at a converged simultaneous "
+         "solution of every network tree, instead of running another sub-iteration to confirm "
+         "that the re-solved wells reproduce it; what remains is left to the next Newton "
+         "iteration (--network-solver=newton without --network-newton-damped-step)");
     Parameters::Register<Parameters::NetworkAutochoke>
         ("Solve autochoke nodes inside the simultaneous network solve: the node pressure "
          "becomes the group's common thp and is raised until the oil through the node meets "

@@ -1173,6 +1173,8 @@ updatePressures(const int reportStepIdx,
                 const bool secant_for_production)
 {
     OPM_TIMEFUNCTION();
+    this->newton_trees_attempted_ = 0;
+    this->newton_trees_solved_ = 0;
     for (auto& invalid_nodes : this->domain_invalid_nodes_) {
         invalid_nodes.clear();
     }
@@ -1258,8 +1260,10 @@ updatePressures(const int reportStepIdx,
                 // -- every node has one parent, so they share nothing. Solve
                 // each and keep the relaxed answer for any that does not.
                 for (const auto& tree : network.network.get().roots()) {
+                    ++this->newton_trees_attempted_;
                     if (auto solved = this->newtonProductionNodePressures(
                             network.network.get(), reportStepIdx, tree.get())) {
+                        ++this->newton_trees_solved_;
                         for (const auto& [name, pressure] : *solved) {
                             result.node_pressures[name] = pressure;
                             result.invalid_nodes.erase(name);
@@ -1287,10 +1291,12 @@ updatePressures(const int reportStepIdx,
                 // branch data from the evaluation above is kept for the output.
                 // Several roots means a forest of independent trees; solve each.
                 for (const auto& tree : network.network.get().roots()) {
+                    ++this->newton_trees_attempted_;
                     if (auto solved = this->newtonInjectionNodePressures(
                             network.network.get(),
                             network.domain == details::NetworkDomain::InjectionGas ? Phase::GAS : Phase::WATER,
                             reportStepIdx, tree.get())) {
+                        ++this->newton_trees_solved_;
                         for (const auto& [name, pressure] : *solved) {
                             result.node_pressures[name] = pressure;
                             result.invalid_nodes.erase(name);
