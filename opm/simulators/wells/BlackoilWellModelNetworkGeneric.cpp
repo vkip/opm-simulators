@@ -349,7 +349,8 @@ newtonInjectionNodePressures(const Network::ExtNetwork& network,
                                     branch.vfp_table().value_or(NetworkSolve::NoTable)};
             node.efficiency = network.node(child).efficiency();
             system.addNode(std::move(node));
-            if (well_model_.schedule().getGroup(child, reportStepIdx).hasSatelliteInjection()) {
+            if (well_model_.schedule().hasGroup(child, reportStepIdx)
+                && well_model_.schedule().getGroup(child, reportStepIdx).hasSatelliteInjection()) {
                 return giveUp(fmt::format("{} carries satellite injection, which arrives as a "
                                           "rate rather than as wells", child));
             }
@@ -639,7 +640,10 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
             // The group sum returns it *instead of* its wells, so its wells are
             // left out below to match. Lift gas the node is told to add is the
             // satellite's own here; each well's is carried on the well.
-            if (schedule.getGroup(child, reportStepIdx).hasSatelliteProduction()) {
+            // Not every network node is a group: a manifold may exist in
+            // BRANPROP/NODEPROP only.
+            if (schedule.hasGroup(child, reportStepIdx)
+                && schedule.getGroup(child, reportStepIdx).hasSatelliteProduction()) {
                 using Rate = GSatProd::Rate;
                 const auto sat = schedule[reportStepIdx].satelliteProduction(child)
                     .getRates(well_model_.summaryState());
