@@ -267,6 +267,9 @@ struct Parameters
     /// Max norm of the scaled residual at which the system is converged.
     Scalar tolerance;
     int max_iterations;
+    /// Give up after this many consecutive iterations without the residual
+    /// falling below 0.9 of its best and without an active-set change; 0 off.
+    int stall_iterations = 0;
 };
 
 /// Solve an InjectionSystem or a ProductionSystem by Newton-Raphson, choosing
@@ -307,6 +310,8 @@ solve(Sys& system,
 
     int switches = 0;
     bool enforcing = false;
+    Scalar best = std::numeric_limits<Scalar>::max();
+    int stalled = 0;
     for (int it = 1; it <= max_iterations; ++it) {
         const bool controls_moved = system.updateControls(x);
         switches += controls_moved ? 1 : 0;
@@ -348,6 +353,16 @@ solve(Sys& system,
             return done;
         }
         last = {false, it, {}, {}, worst, controls_moved, false, joined(), switches};
+        if (worst < Scalar{0.9} * best || controls_moved) {
+            best = std::min(best, worst);
+            stalled = 0;
+        } else if (params.stall_iterations > 0 && ++stalled >= params.stall_iterations) {
+            // A fixed active set and a residual that no longer falls: more
+            // iterations of the same Newton will not get there.
+            last.node_pressure = system.pressures(x);
+            last.well_rate = system.wellRates(x);
+            return last;
+        }
 
         // A system that can hand over an assembled Jacobian does; the rest are
         // differenced. The production prototype has no analytic one yet.

@@ -30,6 +30,7 @@
 #include <opm/simulators/wells/network/NetworkProductionSystem.hpp>
 
 #include <fstream>
+#include <dune/common/timer.hh>
 #include <opm/simulators/wells/WellInterfaceGeneric.hpp>
 
 #include <opm/common/TimingMacros.hpp>
@@ -119,8 +120,11 @@ namespace details {
 /// What the simulator asks of a network solve. The tolerance is on the scaled
 /// residual, so it is dimensionless; 50 iterations is well past where a solve
 /// that is going to converge has, and past it the relaxed update takes over.
+/// A solve whose residual has not improved for 8 iterations with a fixed active
+/// set is handed back at once: every rank solves the system, so a failing
+/// solve costs all of them.
 template<class Scalar>
-constexpr NetworkSolve::Parameters<Scalar> kNetworkSolveParams{1e-2, 50};
+constexpr NetworkSolve::Parameters<Scalar> kNetworkSolveParams{1e-2, 50, 8};
 
 
 namespace {
@@ -564,6 +568,11 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
     if (!root.terminal_pressure().has_value()) {
         return giveUp(fmt::format("the tree under {} has no terminal pressure", root.name()));
     }
+    if (this->newton_max_failures_ > 0
+        && this->newton_step_failures_[root.name()] >= this->newton_max_failures_) {
+        return giveUp(fmt::format("{} solves of the tree under {} failed in this time step",
+                                  this->newton_step_failures_[root.name()], root.name()));
+    }
 
     const auto& schedule = well_model_.schedule();
     const auto& units = schedule.getUnits();
@@ -996,7 +1005,15 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
         }
     }
 
+    Dune::Timer solve_timer;
+    solve_timer.start();
     const auto result = NetworkSolve::solve(system, guess, kNetworkSolveParams<Scalar>, NetworkSolve::FullStep{});
+    this->newton_solve_time_ += solve_timer.stop();
+    ++this->newton_solves_;
+    if (!result.converged) {
+        ++this->newton_failed_solves_;
+        ++this->newton_step_failures_[root.name()];
+    }
     // OPM_NETWORK_DUMP_ALL=N writes the first N solved systems too, not only
     // the failures: a converged answer can still be the wrong root, and that
     // is only visible by replaying the same system both ways in the bench.
@@ -1011,6 +1028,28 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
         if (out) { NetworkSolve::write(system, guess, out); }
     }
     if (!result.converged) {
+        // Which free wells the system could not put on their tubing: a well the
+        // simulator has on thp control does lift at its node pressure, so a 'B'
+        // here is a disagreement between the system's tubing/inflow and the
+        // well model's.
+        std::string unlifted;
+        int listed = 0;
+        for (int w = 0; w < system.numWells() && listed < 8; ++w) {
+            const auto& well = system.wells()[w];
+            if (well.pinned || system.control(w) != Sys::Control::Bhp || !Sys::hasTubing(well)) {
+                continue;
+            }
+            const Scalar p = result.node_pressure.empty() ? terminal
+                                                          : result.node_pressure[well.node];
+            unlifted += fmt::format(" {}(cp {}, p {:.1f} bar, q {:.4g}, thp-pot {:.4g}, bhp-pot {:.4g})",
+                                    well.name, well.cp, p / unit::barsa, well.q_start * 86400,
+                                    system.thpPotential(well, p) * 86400,
+                                    Sys::ipr(well, well.cp, well.bhp_limit) * 86400);
+            ++listed;
+        }
+        if (!unlifted.empty()) {
+            OpmLog::debug("Network: free wells on bhp in the unconverged solve:" + unlifted);
+        }
         return giveUp(fmt::format("it did not converge in {} iterations; residual {:.3g}{}",
                                   result.iterations - 1, result.residual,
                                   result.control_trace.empty()

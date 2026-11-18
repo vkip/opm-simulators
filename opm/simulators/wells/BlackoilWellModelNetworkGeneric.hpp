@@ -236,6 +236,10 @@ public:
     /// than taking each group-controlled well's rate as fixed.
     void useNetworkGroupControl(const bool on) { network_group_control_ = on; }
     void useNetworkAutochoke(const bool on) { network_autochoke_ = on; }
+    void setNewtonMaxFailures(const int n) { newton_max_failures_ = n; }
+    /// Production network solves so far: count, failures, seconds.
+    std::tuple<long, long, double> newtonSolveStats() const
+    { return {newton_solves_, newton_failed_solves_, newton_solve_time_}; }
     void useNetworkComplementarity(const bool on) { network_complementarity_ = on; }
     /// Per local well, the hydrostatic correction its tubing table needs;
     /// computed on the typed side, where the well's density lives.
@@ -389,6 +393,13 @@ protected:
     /// it leaves behind re-opens -- 581 stops on one well in one run.
     mutable std::set<std::string> network_shut_;
     double network_shut_time_ = -1.0, network_shut_dt_ = -1.0;
+    /// Fail fast: after this many failed production solves of a tree in one
+    /// time step, the rest of the step uses the relaxed update (0: no limit).
+    int newton_max_failures_ = 0;
+    mutable std::map<std::string, int> newton_step_failures_;
+    mutable double newton_solve_time_ = 0.0;
+    mutable long newton_solves_ = 0;
+    mutable long newton_failed_solves_ = 0;
 public:
     /// Called at each network balance; a new time step forgets the shuts.
     /// A report step was too long: wells shut on an early iterate stayed
@@ -397,6 +408,7 @@ public:
     {
         if (time != network_shut_time_ || dt != network_shut_dt_) {
             network_shut_.clear();
+            newton_step_failures_.clear();
             network_shut_time_ = time;
             network_shut_dt_ = dt;
         }

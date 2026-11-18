@@ -121,6 +121,7 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     network_solver_ = Parameters::Get<Parameters::NetworkSolver>();
     network_analytic_jacobian_ = Parameters::Get<Parameters::NetworkAnalyticJacobian>();
     network_group_control_ = Parameters::Get<Parameters::NetworkGroupControl>();
+    network_newton_max_failures_ = Parameters::Get<Parameters::NetworkNewtonMaxFailures>();
     network_autochoke_ = Parameters::Get<Parameters::NetworkAutochoke>();
     network_autochoke_bracket_samples_ = Parameters::Get<Parameters::NetworkAutochokeBracketSamples>();
     network_complementarity_ = Parameters::Get<Parameters::NetworkComplementarity>();
@@ -296,6 +297,10 @@ void BlackoilModelParameters<Scalar>::registerParameters()
     Parameters::Register<Parameters::NetworkGroupControl>
         ("Let the network hold a group's injection total and place the split itself, so a well "
          "that hits its own limit is taken up by the others (--network-solver=newton only)");
+    Parameters::Register<Parameters::NetworkNewtonMaxFailures>
+        ("Number of failed simultaneous production network solves of a tree within one time "
+         "step after which the rest of the step uses the relaxed update directly "
+         "(--network-solver=newton only; 0: no limit)");
     Parameters::Register<Parameters::NetworkAutochoke>
         ("Solve autochoke nodes inside the simultaneous network solve: the node pressure "
          "becomes the group's common thp and is raised until the oil through the node meets "

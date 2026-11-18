@@ -148,6 +148,7 @@ update(const bool mandatory_network_balance,
         this->useAnalyticJacobian(well_model_.param().network_analytic_jacobian_);
         this->useNetworkGroupControl(well_model_.param().network_group_control_);
         this->useNetworkAutochoke(well_model_.param().network_autochoke_);
+        this->setNewtonMaxFailures(well_model_.param().network_newton_max_failures_);
         this->useNetworkComplementarity(well_model_.param().network_complementarity_);
         this->useGasLiftNetworkResponse(well_model_.param().gaslift_network_response_);
         this->dumpNetworkFailuresTo(well_model_.param().network_dump_failures_);
@@ -259,6 +260,11 @@ update(const bool mandatory_network_balance,
             well_model_.updateAndCommunicateGroupData(episodeIdx, /*update_wellgrouptarget*/ true);
         }
         more_network_update = more_network_sub_update || well_group_thp_updated;
+        if (solver_mode == "newton" && comm.rank() == 0) {
+            const auto [solves, failed, seconds] = this->newtonSolveStats();
+            OpmLog::debug(fmt::format("Network: {} simultaneous production solves so far, "
+                                      "{} not converged, {:.2f} s", solves, failed, seconds));
+        }
     }
     return { more_network_update, network_imbalance };
 }

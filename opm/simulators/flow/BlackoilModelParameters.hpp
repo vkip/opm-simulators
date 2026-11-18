@@ -162,6 +162,7 @@ struct NetworkPressureUpdateSecant { static constexpr auto value = "injection"; 
 struct NetworkSolver { static constexpr auto value = "fixedpoint"; };
 struct NetworkAnalyticJacobian { static constexpr bool value = false; };
 struct NetworkGroupControl { static constexpr bool value = false; };
+struct NetworkNewtonMaxFailures { static constexpr int value = 0; };
 struct NetworkAutochoke { static constexpr bool value = false; };
 struct NetworkAutochokeBracketSamples { static constexpr int value = 300; };
 struct NetworkComplementarity { static constexpr bool value = false; };
@@ -382,6 +383,10 @@ public:
 
     /// Let the network place the split of a group's injection total itself.
     bool network_group_control_;
+
+    /// Failed production network solves per tree and time step after which the
+    /// rest of the step uses the relaxed update (--network-solver=newton; 0: no limit).
+    int network_newton_max_failures_;
 
     /// Path prefix for writing network systems that fail to converge; empty off.
     std::string network_dump_failures_;
