@@ -526,8 +526,9 @@ void FlowGenericVanguard::registerParameters_()
          "for available METIS options.");
     Parameters::Register<Parameters::PartitionWellWeight>
         ("Weight of the well work in the load balancing, as the weight of one "
-         "cell per well segment (a standard well counts as one segment). "
-         "Applies to the open wells at the end of the schedule. "
+         "cell per well segment (a standard well counts as one segment). The "
+         "work of a well is its number of segments averaged over the simulated "
+         "time while the well is open. "
          "0 (the default) ignores the well work. Only used with "
          "--partition-method=zoltanwell.");
     Parameters::Register<Parameters::PartitionWellEdgeWeight>
