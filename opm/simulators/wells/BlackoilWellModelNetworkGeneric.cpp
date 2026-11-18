@@ -670,6 +670,21 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
         return giveUp("the network needs all three phases and one of them is inactive");
     }
 
+    // GCONSUMP: gas consumed (or imported) at a node leaves (or enters) the
+    // stream in the node's outlet branch, at the same nodes as in the relaxed
+    // evaluation. That evaluation clamps the remaining gas at zero; here the
+    // consumption is taken as small against the stream, so the sink is linear.
+    for (const auto& [name, net_rate] : networkGasConsumptionRates<Scalar>(
+             network, schedule[reportStepIdx], well_model_.summaryState())) {
+        const auto it = index.find(name);
+        if (it == index.end() || it->second == 0) {
+            continue;          // not in this tree, or at its fixed-pressure root
+        }
+        auto source = system.nodeSource(it->second);
+        source[2] -= net_rate;
+        system.setNodeSource(it->second, source);
+    }
+
     // Same reasoning as the injection network: every rank must solve the same
     // system, so the static data comes from the replicated schedule and only
     // what the well is currently doing is summed, contributed once by the rank
@@ -963,7 +978,9 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
                                      static_cast<Scalar>(w.cp)});
     }
     for (int n = 1; n <= system.numNodes(); ++n) {
-        inputs.insert(inputs.end(), {system.chokeTarget(n), system.nodes()[n].efficiency});
+        const auto& source = system.nodeSource(n);
+        inputs.insert(inputs.end(), {system.chokeTarget(n), system.nodes()[n].efficiency,
+                                     source[0], source[1], source[2]});
     }
     if (const auto it = last_production_solve_.find(root.name());
         it != last_production_solve_.end() && it->second.inputs == inputs) {
