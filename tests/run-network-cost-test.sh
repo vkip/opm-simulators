@@ -68,8 +68,8 @@ done
 FALLBACKS=$(grep -c 'simultaneously is not possible' "${DBG}")
 # One line per well solve.
 WELL_SOLVES=$(grep -c 'inner iterations' "${DBG}")
-NEWTON=$(grep 'Newton its=' "${PRT}" \
-         | awk -F'its=' '{split($2,a,","); s+=a[1]} END{printf "%d", s}')
+NEWTON=$(grep -o 'Newton its= *[0-9]*' "${PRT}" \
+         | awk -F'=' '{s+=$2} END{printf "%d", s}')
 # The well taking the largest share of the well solves, and its share.
 read TOP_WELL TOP_COUNT <<< $(grep 'inner iterations' "${DBG}" \
          | awk '{print $2}' | sort | uniq -c | sort -rn | head -1 | awk '{print $2, $1}')
