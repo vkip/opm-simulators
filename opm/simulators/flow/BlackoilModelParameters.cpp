@@ -144,6 +144,8 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     group_control_fraction_tolerance_ = Parameters::Get<Parameters::GroupControlFractionTolerance<Scalar>>();
     enable_group_tree_balancer_ = Parameters::Get<Parameters::EnableGroupTreeBalancer>();
     network_group_tree_balancer_ = Parameters::Get<Parameters::NetworkGroupTreeBalancer>();
+    network_group_tree_balancer_backpressure_ =
+        Parameters::Get<Parameters::NetworkGroupTreeBalancerBackpressure>();
     group_tree_balancer_tolerance_ = Parameters::Get<Parameters::GroupTreeBalancerTolerance<Scalar>>();
 }
 
@@ -423,6 +425,11 @@ void BlackoilModelParameters<Scalar>::registerParameters()
          "the network solve sees group targets balanced at the current node pressures. "
          "Intended with --network-solver=newton --network-newton-skip-confirmation=true, "
          "where that is one balance per network update");
+    Parameters::Register<Parameters::NetworkGroupTreeBalancerBackpressure>
+        ("With --network-group-tree-balancer: limit each network well, for the balancer, to "
+         "the rate it can produce against its own back-pressure -- the rate at which its THP "
+         "potential at the node pressure of the last network solve, raised by its own rate "
+         "change with the rest of the network fixed, equals that rate");
     Parameters::Register<Parameters::GroupTreeBalancerTolerance<Scalar>>
         ("Relative convergence tolerance for the production group-tree balancer");
 

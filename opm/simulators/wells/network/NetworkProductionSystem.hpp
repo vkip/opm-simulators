@@ -128,6 +128,11 @@ public:
         : props_(&props), units_(&units)
     {}
 
+    /// The well model recreates its VFP properties at every report step; a
+    /// system kept from an earlier solve must be pointed at the current ones
+    /// before it evaluates anything.
+    void setVfpProperties(const VFPProdProperties<Scalar>& props) { props_ = &props; }
+
     void addNode(Node n, const Scalar alq)
     {
         nodes_.push_back(std::move(n));

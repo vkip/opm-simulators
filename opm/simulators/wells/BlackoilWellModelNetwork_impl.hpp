@@ -179,6 +179,8 @@ update(const bool mandatory_network_balance,
             && well_model_.param().network_newton_skip_confirmation_;
         this->useNetworkComplementarity(well_model_.param().network_complementarity_);
         this->useGasLiftNetworkResponse(well_model_.param().gaslift_network_response_);
+        this->useBalancerBackpressure(well_model_.param().network_group_tree_balancer_
+                                      && well_model_.param().network_group_tree_balancer_backpressure_);
         this->dumpNetworkFailuresTo(well_model_.param().network_dump_failures_);
         if (solver_mode == "newton") {
             // The simultaneous solve needs every well's rate response to its own

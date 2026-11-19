@@ -286,6 +286,10 @@ public:
     /// Answer the gas lift optimiser's trials from the network instead of
     /// from a well solve at a fixed thp.
     void useGasLiftNetworkResponse(const bool on) { gaslift_network_response_ = on; }
+    /// Include each network well's own back-pressure in its group-tree
+    /// balancer limit (overrideBalancerLimits); keeps the back-pressure
+    /// references of all wells on every rank.
+    void useBalancerBackpressure(const bool on) { balancer_backpressure_ = on; }
     bool gasLiftNetworkResponse() const { return gaslift_network_response_; }
 
     /// What a well would produce, and at what bhp, with its lift gas set to
@@ -428,6 +432,17 @@ protected:
         std::map<std::string, std::pair<std::array<Scalar, 3>, Scalar>> wells;
     };
     mutable std::map<std::string, SolvedTree> last_production_solve_;
+    /// The rate (control phase) a well of a solved tree can produce against
+    /// its own back-pressure: the q at which its THP potential at the node
+    /// pressure, moved by its own rate change from the solved rate with the
+    /// rest of the network fixed, equals q. nullopt where the back-pressure
+    /// cannot be evaluated (no reference, autochoke on the chain, no solved
+    /// rates for the well).
+    std::optional<Scalar>
+    ownBackpressurePotential_(const SolvedTree& tree,
+                              const NetworkSolve::ProductionSystem<Scalar>& system,
+                              const typename NetworkSolve::ProductionSystem<Scalar>::Well& well,
+                              Scalar node_pressure) const;
     /// Wells the complementarity solve shut earlier in this report step. A
     /// dying well the network shuts, the well model stops, and the pressure
     /// it leaves behind re-opens -- 581 stops on one well in one run.
@@ -472,6 +487,7 @@ public:
     }
 protected:
     bool gaslift_network_response_ = false;
+    bool balancer_backpressure_ = false;
     std::string network_dump_prefix_;
     mutable int network_dumps_written_ = 0;
 

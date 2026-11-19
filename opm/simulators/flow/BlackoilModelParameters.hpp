@@ -108,6 +108,7 @@ struct MatrixAddWellContributions { static constexpr bool value = false; };
 
 struct EnableGroupTreeBalancer { static constexpr bool value = false; };
 struct NetworkGroupTreeBalancer { static constexpr bool value = false; };
+struct NetworkGroupTreeBalancerBackpressure { static constexpr bool value = false; };
 template<class Scalar>
 struct GroupTreeBalancerTolerance { static constexpr Scalar value = 1e-5; };
 
@@ -494,6 +495,10 @@ public:
     /// Run the production group-tree balancer once before each network
     /// sub-iteration, so the network solve sees balanced group targets.
     bool network_group_tree_balancer_;
+
+    /// Under network_group_tree_balancer_, include each network well's own
+    /// back-pressure in its balancer limit.
+    bool network_group_tree_balancer_backpressure_;
 
     /// Relative tolerance for the group-tree balancer convergence check
     Scalar group_tree_balancer_tolerance_;

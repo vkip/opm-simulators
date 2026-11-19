@@ -1220,6 +1220,69 @@ wellBackpressureThp(const std::string& well,
 }
 
 template<typename Scalar, typename IndexTraits>
+std::optional<Scalar>
+BlackoilWellModelNetworkGeneric<Scalar, IndexTraits>::
+ownBackpressurePotential_(const SolvedTree& tree,
+                          const NetworkSolve::ProductionSystem<Scalar>& system,
+                          const typename NetworkSolve::ProductionSystem<Scalar>::Well& well,
+                          const Scalar node_pressure) const
+{
+    using Sys = NetworkSolve::ProductionSystem<Scalar>;
+    const auto solved = tree.wells.find(well.name);
+    if (solved == tree.wells.end()) {
+        return std::nullopt;
+    }
+    const auto& pu = well_model_.phaseUsage();
+    const std::array<int, 3> canon{IndexTraits::waterPhaseIdx, IndexTraits::oilPhaseIdx,
+                                   IndexTraits::gasPhaseIdx};
+    // Water, oil, gas production rates as opm's signed active-phase rates.
+    const auto signedRates = [&](const std::array<Scalar, 3>& q) {
+        std::vector<Scalar> rates(pu.numActivePhases(), Scalar{0});
+        for (int ph = 0; ph < 3; ++ph) {
+            const int a = pu.canonicalToActivePhaseIdx(canon[ph]);
+            if (a >= 0) {
+                rates[a] = -q[ph];
+            }
+        }
+        return rates;
+    };
+    const auto at_solved = this->wellBackpressureThp(well.name, signedRates(solved->second.first));
+    if (!at_solved.has_value()) {
+        return std::nullopt;
+    }
+    const int cp = well.cp;
+    // The node pressure the well sees when it produces q in its control
+    // phase, on the phase split of its inflow at the bhp that gives q.
+    const auto pressureAt = [&](const Scalar q) {
+        const Scalar bhp = (q - well.ipr_a[cp]) / well.ipr_b[cp];
+        std::array<Scalar, 3> rates{};
+        for (int ph = 0; ph < 3; ++ph) {
+            rates[ph] = std::max(Sys::ipr(well, ph, bhp), Scalar{0});
+        }
+        const auto thp = this->wellBackpressureThp(well.name, signedRates(rates));
+        return thp.has_value() ? node_pressure + (*thp - *at_solved) : node_pressure;
+    };
+    // At zero rate the well sees the lowest pressure its own flow allows;
+    // what it lifts there bounds the answer. Above the answer the potential
+    // at the raised pressure is below the rate, below it above.
+    const Scalar hi = system.thpPotential(well, pressureAt(Scalar{0}));
+    if (!(hi > Scalar{0})) {
+        return Scalar{0};
+    }
+    Scalar lo = 0.0;
+    Scalar up = hi;
+    for (int it = 0; it < 40 && up - lo > Scalar{1e-6} * hi; ++it) {
+        const Scalar mid = Scalar{0.5} * (lo + up);
+        if (system.thpPotential(well, pressureAt(mid)) > mid) {
+            lo = mid;
+        } else {
+            up = mid;
+        }
+    }
+    return lo;
+}
+
+template<typename Scalar, typename IndexTraits>
 void
 BlackoilWellModelNetworkGeneric<Scalar, IndexTraits>::
 overrideBalancerLimits(const int reportStepIdx,
@@ -1231,7 +1294,8 @@ overrideBalancerLimits(const int reportStepIdx,
         if (!tree.system) {
             continue;
         }
-        const auto& system = *tree.system;
+        auto system = *tree.system;
+        system.setVfpProperties(*well_model_.getVFPProperties().getProd());
         for (int w = 0; w < system.numWells(); ++w) {
             const auto& well = system.wells()[w];
             const auto p = tree.pressures.find(tree.order[well.node]);
@@ -1245,7 +1309,12 @@ overrideBalancerLimits(const int reportStepIdx,
             }
             // The rate (in the control phase) the tubing allows at the node
             // pressure; max() if it does not bind, zero if it cannot lift there.
-            const Scalar q_thp = Sys::hasTubing(well) ? system.thpPotential(well, p->second) : unbounded;
+            Scalar q_thp = Sys::hasTubing(well) ? system.thpPotential(well, p->second) : unbounded;
+            if (this->balancer_backpressure_ && Sys::hasTubing(well)) {
+                if (const auto q = this->ownBackpressurePotential_(tree, system, well, p->second)) {
+                    q_thp = *q;
+                }
+            }
             if (!(q_thp > Scalar{0})) {
                 limits.erase(well.name);
                 continue;
@@ -1312,6 +1381,7 @@ gasLiftTrial(const std::string& well, const Scalar alq) const
         // to somewhere it never sits and the optimiser then applies the limit on
         // top of a potential taken at the wrong pressure.
         auto trial = *tree.system;
+        trial.setVfpProperties(*well_model_.getVFPProperties().getProd());
         trial.setWellAlq(w, alq);
         std::vector<Scalar> guess(tree.order.size(), Scalar{0});
         for (std::size_t n = 0; n < tree.order.size(); ++n) {
@@ -1391,6 +1461,39 @@ updatePressures(const int reportStepIdx,
                 ref.rates[ph] = (a >= 0) ? std::max(-ws.surface_rates[a], Scalar{0}) : Scalar{0};
             }
             this->backpressure_ref_.emplace(well->name(), std::move(ref));
+        }
+        if (this->balancer_backpressure_) {
+            // The balancer's limits must be the same on every rank, so every
+            // rank needs every well's reference, not only its own wells'.
+            // Rates and efficiencies are non-negative and equal on the ranks
+            // that share a well: the max gathers them.
+            const auto& schedule = well_model_.schedule();
+            std::vector<std::string> names;
+            for (const auto& name : schedule.wellNames(reportStepIdx)) {
+                const auto& w = schedule.getWell(name, reportStepIdx);
+                if (w.isProducer() && prod_network.has_node(w.groupName())) {
+                    names.push_back(name);
+                }
+            }
+            std::vector<Scalar> buf(4 * names.size(), Scalar{0});
+            for (std::size_t i = 0; i < names.size(); ++i) {
+                const auto it = this->backpressure_ref_.find(names[i]);
+                if (it != this->backpressure_ref_.end()) {
+                    buf[4 * i] = it->second.efficiency;
+                    for (int ph = 0; ph < 3; ++ph) {
+                        buf[4 * i + 1 + ph] = it->second.rates[ph];
+                    }
+                }
+            }
+            well_model_.comm().max(buf.data(), buf.size());
+            for (std::size_t i = 0; i < names.size(); ++i) {
+                if (!(buf[4 * i] > Scalar{0})) {
+                    continue;
+                }
+                const auto& w = schedule.getWell(names[i], reportStepIdx);
+                BackpressureRef ref{w.groupName(), buf[4 * i], {buf[4 * i + 1], buf[4 * i + 2], buf[4 * i + 3]}};
+                this->backpressure_ref_.insert_or_assign(names[i], std::move(ref));
+            }
         }
     }
 
